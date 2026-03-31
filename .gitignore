@@ -1,2 +1,7 @@
 *.o
+*.pic.o
 prodigal
+prodigal_native
+libprodigal.a
+libprodigal.so
+test_api
