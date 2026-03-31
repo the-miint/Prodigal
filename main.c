@@ -35,6 +35,8 @@
 #define IDEAL_SINGLE_GENOME 100000
 
 
+#ifndef PRODIGAL_NO_MAIN
+
 void version();
 void usage(char *);
 void help();
@@ -711,3 +713,5 @@ int copy_standard_input_to_file(char *path, int quiet) {
   }
   return 0;
 }
+
+#endif /* PRODIGAL_NO_MAIN */

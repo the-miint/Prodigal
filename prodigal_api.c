@@ -1,0 +1,1021 @@
+/*******************************************************************************
+    PRODIGAL (PROkaryotic DynamIc Programming Genefinding ALgorithm)
+    Library API implementation.
+*******************************************************************************/
+
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include "prodigal_internal.h"
+
+/*******************************************************************************
+    Validation helpers
+*******************************************************************************/
+
+static int is_valid_trans_table(int tt) {
+    if (tt < 1 || tt > 25) return 0;
+    if (tt == 7 || tt == 8) return 0;
+    if (tt >= 17 && tt <= 20) return 0;
+    return 1;
+}
+
+/*******************************************************************************
+    Error reporting
+*******************************************************************************/
+
+const char *prodigal_version_string(void) {
+    return PRODIGAL_VERSION_STRING;
+}
+
+const char *prodigal_strerror(int error_code) {
+    switch (error_code) {
+        case PRODIGAL_OK:                  return "Success";
+        case PRODIGAL_ERR_NOMEM:           return "Out of memory";
+        case PRODIGAL_ERR_INVALID_CONFIG:  return "Invalid configuration";
+        case PRODIGAL_ERR_INVALID_INPUT:   return "Invalid input";
+        case PRODIGAL_ERR_INTERNAL:        return "Internal error";
+        case PRODIGAL_ERR_SEQ_TOO_SHORT:   return "Sequence too short";
+        case PRODIGAL_ERR_CANCELLED:       return "Cancelled";
+        default:                           return "Unknown error";
+    }
+}
+
+const char *prodigal_last_error(const prodigal_ctx_t *ctx) {
+    if (ctx == NULL) return "NULL context";
+    return ctx->error_msg;
+}
+
+/*******************************************************************************
+    Config initialization
+*******************************************************************************/
+
+void prodigal_config_init(prodigal_config_t *config) {
+    memset(config, 0, sizeof(*config));
+    config->struct_size = sizeof(prodigal_config_t);
+    config->trans_table = 11;
+    config->start_weight = 4.35;
+}
+
+/*******************************************************************************
+    Context lifecycle
+*******************************************************************************/
+
+prodigal_ctx_t *prodigal_create(const prodigal_config_t *config) {
+    if (config == NULL) return NULL;
+    if (config->struct_size != sizeof(prodigal_config_t)) return NULL;
+    if (!is_valid_trans_table(config->trans_table)) return NULL;
+
+    prodigal_ctx_t *ctx = (prodigal_ctx_t *)malloc(sizeof(prodigal_ctx_t));
+    if (ctx == NULL) return NULL;
+    memset(ctx, 0, sizeof(*ctx));
+
+    /* Snapshot config */
+    ctx->config = *config;
+
+    /* Initialize training defaults */
+    memset(&ctx->tinf, 0, sizeof(struct _training));
+    ctx->tinf.st_wt = config->start_weight;
+    ctx->tinf.trans_table = config->trans_table;
+
+    /* Allocate sequence buffers */
+    ctx->seq = (unsigned char *)pdg_alloc(ctx, MAX_SEQ / 4 * sizeof(unsigned char));
+    ctx->rseq = (unsigned char *)pdg_alloc(ctx, MAX_SEQ / 4 * sizeof(unsigned char));
+    ctx->useq = (unsigned char *)pdg_alloc(ctx, MAX_SEQ / 8 * sizeof(unsigned char));
+    if (ctx->seq == NULL || ctx->rseq == NULL || ctx->useq == NULL) {
+        prodigal_destroy(ctx);
+        return NULL;
+    }
+    memset(ctx->seq, 0, MAX_SEQ / 4 * sizeof(unsigned char));
+    memset(ctx->rseq, 0, MAX_SEQ / 4 * sizeof(unsigned char));
+    memset(ctx->useq, 0, MAX_SEQ / 8 * sizeof(unsigned char));
+
+    /* Allocate node and gene arrays */
+    ctx->nodes = (struct _node *)pdg_alloc(ctx, STT_NOD * sizeof(struct _node));
+    ctx->genes = (struct _gene *)pdg_alloc(ctx, MAX_GENES * sizeof(struct _gene));
+    if (ctx->nodes == NULL || ctx->genes == NULL) {
+        prodigal_destroy(ctx);
+        return NULL;
+    }
+    memset(ctx->nodes, 0, STT_NOD * sizeof(struct _node));
+    memset(ctx->genes, 0, MAX_GENES * sizeof(struct _gene));
+
+    return ctx;
+}
+
+void prodigal_destroy(prodigal_ctx_t *ctx) {
+    int i;
+    if (ctx == NULL) return;
+
+    pdg_free(ctx, ctx->seq);
+    pdg_free(ctx, ctx->rseq);
+    pdg_free(ctx, ctx->useq);
+    pdg_free(ctx, ctx->nodes);
+    pdg_free(ctx, ctx->genes);
+
+    if (ctx->meta != NULL) {
+        for (i = 0; i < NUM_META; i++) {
+            if (ctx->meta[i].tinf != NULL)
+                pdg_free(ctx, ctx->meta[i].tinf);
+        }
+        pdg_free(ctx, ctx->meta);
+    }
+
+    free(ctx);  /* Context itself always uses system malloc */
+}
+
+/*******************************************************************************
+    Sequence encoding helpers
+*******************************************************************************/
+
+/* Encode a single base into the bitmap at position *bctr, advance counters.
+   Returns 1 if base is G or C (for GC counting), 0 otherwise. */
+static int encode_base(unsigned char *seq, unsigned char *useq,
+                       int *bctr, int *len, char ch) {
+    int gc = 0;
+    if (ch == 'g' || ch == 'G') {
+        set(seq, *bctr);
+        gc = 1;
+    }
+    else if (ch == 't' || ch == 'T') {
+        set(seq, *bctr);
+        set(seq, *bctr + 1);
+    }
+    else if (ch == 'c' || ch == 'C') {
+        set(seq, *bctr + 1);
+        gc = 1;
+    }
+    else if (ch != 'a' && ch != 'A') {
+        /* Ambiguous base: encode as C, mark in useq */
+        set(seq, *bctr + 1);
+        set(useq, *len);
+    }
+    /* A = nothing set (00) */
+    *bctr += 2;
+    (*len)++;
+    return gc;
+}
+
+/* Insert TTAATTAATTAA (12 bases) as stop codons in all 6 frames */
+static void encode_stop_spacer(unsigned char *seq, int *bctr, int *len) {
+    int i;
+    for (i = 0; i < 12; i++) {
+        if (i % 4 == 0 || i % 4 == 1) {
+            set(seq, *bctr);
+            set(seq, *bctr + 1);
+        }
+        *bctr += 2;
+        (*len)++;
+    }
+}
+
+/* Reset sequence state in context and optionally realloc if needed */
+static int reset_sequence_state(prodigal_ctx_t *ctx, int needed_len) {
+    if (ctx->slen > 0) {
+        memset(ctx->seq, 0, (ctx->slen / 4 + 1) * sizeof(unsigned char));
+        memset(ctx->rseq, 0, (ctx->slen / 4 + 1) * sizeof(unsigned char));
+        memset(ctx->useq, 0, (ctx->slen / 8 + 1) * sizeof(unsigned char));
+        memset(ctx->nodes, 0, ctx->nn * sizeof(struct _node));
+    }
+    ctx->slen = 0;
+    ctx->nn = 0;
+    ctx->nmask = 0;
+    ctx->gc = 0.0;
+    ctx->cur_header[0] = '\0';
+    ctx->error_msg[0] = '\0';
+    ctx->error_code = PRODIGAL_OK;
+
+    /* Realloc node array if needed */
+    if (needed_len > ctx->max_slen && needed_len > STT_NOD * 8) {
+        struct _node *new_nodes = (struct _node *)pdg_alloc(ctx,
+            (needed_len / 8) * sizeof(struct _node));
+        if (new_nodes == NULL) {
+            PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                          "Failed to allocate nodes for sequence length %d",
+                          needed_len);
+            return PRODIGAL_ERR_NOMEM;
+        }
+        pdg_free(ctx, ctx->nodes);
+        ctx->nodes = new_nodes;
+        memset(ctx->nodes, 0, (needed_len / 8) * sizeof(struct _node));
+        ctx->max_slen = needed_len;
+    }
+
+    return PRODIGAL_OK;
+}
+
+/*******************************************************************************
+    Sequence input
+*******************************************************************************/
+
+int prodigal_set_sequence(prodigal_ctx_t *ctx, const char *seq, int32_t len,
+                          const char *header) {
+    int bctr = 0, slen = 0, gc_cont = 0;
+    int mask_beg = -1;
+    int32_t i;
+    int rc;
+
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (seq == NULL || len <= 0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Sequence is NULL or length <= 0");
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+    if (len >= MAX_SEQ) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Sequence length %d exceeds maximum %d", len, MAX_SEQ);
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+
+    rc = reset_sequence_state(ctx, len);
+    if (rc != PRODIGAL_OK) return rc;
+
+    /* Encode each base */
+    for (i = 0; i < len; i++) {
+        char ch = seq[i];
+        if (ch < 'A' || ch > 'z') continue;
+
+        /* Masking logic */
+        if (ctx->config.mask_regions) {
+            if (mask_beg != -1 && ch != 'N' && ch != 'n') {
+                if (slen - mask_beg >= MASK_SIZE) {
+                    if (ctx->nmask < MAX_MASKS) {
+                        ctx->mlist[ctx->nmask].begin = mask_beg;
+                        ctx->mlist[ctx->nmask].end = slen - 1;
+                        ctx->nmask++;
+                    }
+                }
+                mask_beg = -1;
+            }
+            if (mask_beg == -1 && (ch == 'N' || ch == 'n'))
+                mask_beg = slen;
+        }
+
+        gc_cont += encode_base(ctx->seq, ctx->useq, &bctr, &slen, ch);
+    }
+
+    if (slen == 0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "No valid bases found in sequence");
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+
+    ctx->slen = slen;
+    ctx->gc = (double)gc_cont / (double)slen;
+
+    /* Compute reverse complement */
+    rcom_seq(ctx->seq, ctx->rseq, ctx->useq, slen);
+
+    /* Store header */
+    if (header != NULL) {
+        strncpy(ctx->cur_header, header, MAX_LINE - 1);
+        ctx->cur_header[MAX_LINE - 1] = '\0';
+    }
+
+    return PRODIGAL_OK;
+}
+
+int prodigal_set_training_sequences(prodigal_ctx_t *ctx, const char **seqs,
+                                    const char **headers, const int32_t *lens,
+                                    int32_t n_seqs) {
+    int bctr = 0, slen = 0, gc_cont = 0;
+    int mask_beg = -1;
+    int32_t s, i;
+    int total_len = 0;
+    int rc;
+
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (seqs == NULL || lens == NULL || n_seqs <= 0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Invalid training sequence arguments");
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+
+    /* Estimate total length including stop spacers */
+    for (s = 0; s < n_seqs; s++) total_len += lens[s];
+    total_len += 12 * n_seqs;  /* TTAATTAATTAA per sequence */
+
+    if (total_len >= MAX_SEQ) total_len = MAX_SEQ - 1;
+
+    rc = reset_sequence_state(ctx, total_len);
+    if (rc != PRODIGAL_OK) return rc;
+
+    for (s = 0; s < n_seqs; s++) {
+        /* Insert stop spacer between sequences (and after last) */
+        if (s > 0) {
+            encode_stop_spacer(ctx->seq, &bctr, &slen);
+        }
+
+        if (seqs[s] == NULL || lens[s] <= 0) continue;
+
+        for (i = 0; i < lens[s]; i++) {
+            char ch = seqs[s][i];
+            if (ch < 'A' || ch > 'z') continue;
+
+            /* Masking logic */
+            if (ctx->config.mask_regions) {
+                if (mask_beg != -1 && ch != 'N' && ch != 'n') {
+                    if (slen - mask_beg >= MASK_SIZE) {
+                        if (ctx->nmask < MAX_MASKS) {
+                            ctx->mlist[ctx->nmask].begin = mask_beg;
+                            ctx->mlist[ctx->nmask].end = slen - 1;
+                            ctx->nmask++;
+                        }
+                    }
+                    mask_beg = -1;
+                }
+                if (mask_beg == -1 && (ch == 'N' || ch == 'n'))
+                    mask_beg = slen;
+            }
+
+            gc_cont += encode_base(ctx->seq, ctx->useq, &bctr, &slen, ch);
+
+            if (slen + MAX_LINE >= MAX_SEQ) break;
+        }
+        if (slen + MAX_LINE >= MAX_SEQ) break;
+    }
+
+    /* Trailing stop spacer if multiple sequences */
+    if (n_seqs > 1) {
+        encode_stop_spacer(ctx->seq, &bctr, &slen);
+    }
+
+    if (slen == 0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "No valid bases found in training sequences");
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+
+    ctx->slen = slen;
+    ctx->gc = (double)gc_cont / (double)slen;
+    rcom_seq(ctx->seq, ctx->rseq, ctx->useq, slen);
+
+    /* Store first header */
+    if (headers != NULL && headers[0] != NULL) {
+        strncpy(ctx->cur_header, headers[0], MAX_LINE - 1);
+        ctx->cur_header[MAX_LINE - 1] = '\0';
+    }
+
+    return PRODIGAL_OK;
+}
+
+int prodigal_get_seq_info(const prodigal_ctx_t *ctx, prodigal_seq_info_t *info) {
+    if (ctx == NULL || info == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    info->length = ctx->slen;
+    info->gc_content = ctx->gc;
+    return PRODIGAL_OK;
+}
+
+/*******************************************************************************
+    Training
+*******************************************************************************/
+
+int prodigal_train(prodigal_ctx_t *ctx) {
+    int *gc_frame;
+    int ipath;
+
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (ctx->slen == 0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "No sequence loaded for training");
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+    if (ctx->slen < 20000) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_SEQ_TOO_SHORT,
+                      "Sequence must be >= 20000 bp for training (got %d)",
+                      ctx->slen);
+        return PRODIGAL_ERR_SEQ_TOO_SHORT;
+    }
+
+    PDG_LOG(ctx, "Finding all potential starts and stops...");
+
+    /* Realloc nodes if needed */
+    if (ctx->slen > ctx->max_slen && ctx->slen > STT_NOD * 8) {
+        struct _node *new_nodes = (struct _node *)pdg_alloc(ctx,
+            (ctx->slen / 8) * sizeof(struct _node));
+        if (new_nodes == NULL) {
+            PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                          "Failed to allocate nodes for training");
+            return PRODIGAL_ERR_NOMEM;
+        }
+        pdg_free(ctx, ctx->nodes);
+        ctx->nodes = new_nodes;
+        memset(ctx->nodes, 0, (ctx->slen / 8) * sizeof(struct _node));
+        ctx->max_slen = ctx->slen;
+    }
+
+    ctx->nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                        ctx->config.closed_ends, ctx->mlist, ctx->nmask,
+                        &ctx->tinf);
+    qsort(ctx->nodes, ctx->nn, sizeof(struct _node), &compare_nodes);
+
+    PDG_LOG(ctx, "%d nodes found", ctx->nn);
+    PDG_LOG(ctx, "Looking for GC bias in different frames...");
+
+    /* GC frame bias */
+    gc_frame = calc_most_gc_frame(ctx->seq, ctx->slen);
+    if (gc_frame == NULL) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                      "Failed to allocate GC frame array");
+        return PRODIGAL_ERR_NOMEM;
+    }
+    record_gc_bias(gc_frame, ctx->nodes, ctx->nn, &ctx->tinf);
+    free(gc_frame);
+
+    PDG_LOG(ctx, "Building initial gene set...");
+
+    /* Initial DP with GC bias only */
+    record_overlapping_starts(ctx->nodes, ctx->nn, &ctx->tinf, 0);
+    ipath = dprog(ctx->nodes, ctx->nn, &ctx->tinf, 0);
+
+    PDG_LOG(ctx, "Creating coding model and scoring nodes...");
+
+    /* Dicodon statistics and coding scores */
+    calc_dicodon_gene(&ctx->tinf, ctx->seq, ctx->rseq, ctx->slen,
+                      ctx->nodes, ipath);
+    raw_coding_score(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                     ctx->nn, &ctx->tinf);
+
+    PDG_LOG(ctx, "Examining upstream regions and training starts...");
+
+    /* RBS and start training */
+    rbs_score(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, ctx->nn, &ctx->tinf);
+    train_starts_sd(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, ctx->nn,
+                    &ctx->tinf);
+    determine_sd_usage(&ctx->tinf);
+    if (ctx->config.force_nonsd) ctx->tinf.uses_sd = 0;
+    if (ctx->tinf.uses_sd == 0)
+        train_starts_nonsd(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                           ctx->nn, &ctx->tinf);
+
+    ctx->trained = 1;
+
+    PDG_LOG(ctx, "Training complete (GC=%.2f, uses_sd=%d)",
+            ctx->tinf.gc, ctx->tinf.uses_sd);
+
+    return PRODIGAL_OK;
+}
+
+int prodigal_load_training(prodigal_ctx_t *ctx, const void *data, size_t len) {
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (data == NULL || len != sizeof(struct _training)) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Invalid training data (expected %zu bytes, got %zu)",
+                      sizeof(struct _training), len);
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+
+    memcpy(&ctx->tinf, data, sizeof(struct _training));
+
+    /* Basic sanity checks */
+    if (!is_valid_trans_table(ctx->tinf.trans_table)) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Training data has invalid translation table %d",
+                      ctx->tinf.trans_table);
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+
+    ctx->trained = 1;
+    return PRODIGAL_OK;
+}
+
+int prodigal_export_training(const prodigal_ctx_t *ctx, void **data_out,
+                             size_t *len_out) {
+    void *buf;
+    if (ctx == NULL || data_out == NULL || len_out == NULL)
+        return PRODIGAL_ERR_INVALID_INPUT;
+
+    buf = malloc(sizeof(struct _training));
+    if (buf == NULL) return PRODIGAL_ERR_NOMEM;
+
+    memcpy(buf, &ctx->tinf, sizeof(struct _training));
+    *data_out = buf;
+    *len_out = sizeof(struct _training);
+    return PRODIGAL_OK;
+}
+
+/*******************************************************************************
+    Training parameter setters
+*******************************************************************************/
+
+int prodigal_set_translation_table(prodigal_ctx_t *ctx, int table) {
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (!is_valid_trans_table(table)) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Invalid translation table %d", table);
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+    ctx->tinf.trans_table = table;
+    return PRODIGAL_OK;
+}
+
+int prodigal_set_start_weight(prodigal_ctx_t *ctx, double weight) {
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (weight <= 0.0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "Start weight must be > 0 (got %.2f)", weight);
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+    ctx->tinf.st_wt = weight;
+    return PRODIGAL_OK;
+}
+
+int prodigal_set_gc(prodigal_ctx_t *ctx, double gc) {
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (gc < 0.0 || gc > 1.0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "GC must be in [0, 1] (got %.4f)", gc);
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
+    ctx->tinf.gc = gc;
+    return PRODIGAL_OK;
+}
+
+int prodigal_set_uses_sd(prodigal_ctx_t *ctx, int uses_sd) {
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    ctx->tinf.uses_sd = (uses_sd != 0) ? 1 : 0;
+    return PRODIGAL_OK;
+}
+
+/*******************************************************************************
+    SD motif string tables (shared with record_gene_data in gene.c)
+*******************************************************************************/
+
+static const char *sd_string[28] = {
+    "None", "GGA/GAG/AGG", "3Base/5BMM", "4Base/6BMM",
+    "AGxAG", "AGxAG", "GGA/GAG/AGG", "GGxGG",
+    "GGxGG", "AGxAG", "AGGAG(G)/GGAGG", "AGGA/GGAG/GAGG",
+    "AGGA/GGAG/GAGG", "GGA/GAG/AGG", "GGxGG", "AGGA",
+    "GGAG/GAGG", "AGxAGG/AGGxGG", "AGxAGG/AGGxGG", "AGxAGG/AGGxGG",
+    "AGGAG/GGAGG", "AGGAG", "AGGAG", "GGAGG",
+    "GGAGG", "AGGAGG", "AGGAGG", "AGGAGG"
+};
+
+static const char *sd_spacer_str[28] = {
+    "None", "3-4bp", "13-15bp", "13-15bp",
+    "11-12bp", "3-4bp", "11-12bp", "11-12bp",
+    "3-4bp", "5-10bp", "13-15bp", "3-4bp",
+    "11-12bp", "5-10bp", "5-10bp", "5-10bp",
+    "5-10bp", "11-12bp", "3-4bp", "5-10bp",
+    "11-12bp", "3-4bp", "5-10bp", "3-4bp",
+    "5-10bp", "11-12bp", "3-4bp", "5-10bp"
+};
+
+/* type_string used by get_rbs_info and SOA extraction */
+/* static const char *type_string[4] = { "ATG", "GTG", "TTG", "Edge" }; */
+
+/*******************************************************************************
+    Internal: run gene-finding pipeline, populate ctx->genes and ctx->nn
+    Returns number of genes found, or negative on error.
+*******************************************************************************/
+
+static int run_gene_pipeline(prodigal_ctx_t *ctx) {
+    int ipath, ng;
+
+    if (ctx->slen == 0) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                      "No sequence loaded");
+        return -1;
+    }
+
+    /* Realloc nodes if needed */
+    if (ctx->slen > ctx->max_slen && ctx->slen > STT_NOD * 8) {
+        struct _node *new_nodes = (struct _node *)pdg_alloc(ctx,
+            (ctx->slen / 8) * sizeof(struct _node));
+        if (new_nodes == NULL) {
+            PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                          "Failed to allocate nodes");
+            return -1;
+        }
+        pdg_free(ctx, ctx->nodes);
+        ctx->nodes = new_nodes;
+        memset(ctx->nodes, 0, (ctx->slen / 8) * sizeof(struct _node));
+        ctx->max_slen = ctx->slen;
+    }
+
+    /* Find all start/stop nodes */
+    ctx->nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                        ctx->config.closed_ends, ctx->mlist, ctx->nmask,
+                        &ctx->tinf);
+    qsort(ctx->nodes, ctx->nn, sizeof(struct _node), &compare_nodes);
+
+    /* Score nodes */
+    score_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, ctx->nn,
+                &ctx->tinf, ctx->config.closed_ends, ctx->config.meta_mode);
+
+    /* Dynamic programming */
+    record_overlapping_starts(ctx->nodes, ctx->nn, &ctx->tinf, 1);
+    ipath = dprog(ctx->nodes, ctx->nn, &ctx->tinf, 1);
+
+    /* Eliminate bad genes and extract */
+    eliminate_bad_genes(ctx->nodes, ipath, &ctx->tinf);
+    memset(ctx->genes, 0, MAX_GENES * sizeof(struct _gene));
+    ng = add_genes(ctx->genes, ctx->nodes, ipath);
+    tweak_final_starts(ctx->genes, ng, ctx->nodes, ctx->nn, &ctx->tinf);
+    record_gene_data(ctx->genes, ng, ctx->nodes, &ctx->tinf, 1);
+
+    return ng;
+}
+
+/*******************************************************************************
+    Internal: determine RBS motif and spacer for a gene
+*******************************************************************************/
+
+static void get_rbs_info(const struct _node *nod, int ndx,
+                         const struct _training *tinf,
+                         const char **motif_out, const char **spacer_out) {
+    double rbs1 = tinf->rbs_wt[nod[ndx].rbs[0]] * tinf->st_wt;
+    double rbs2 = tinf->rbs_wt[nod[ndx].rbs[1]] * tinf->st_wt;
+
+    if (tinf->uses_sd == 1) {
+        if (rbs1 > rbs2) {
+            *motif_out = sd_string[nod[ndx].rbs[0]];
+            *spacer_out = sd_spacer_str[nod[ndx].rbs[0]];
+        } else {
+            *motif_out = sd_string[nod[ndx].rbs[1]];
+            *spacer_out = sd_spacer_str[nod[ndx].rbs[1]];
+        }
+    } else {
+        if (tinf->no_mot > -0.5 && rbs1 > rbs2 &&
+            rbs1 > nod[ndx].mot.score * tinf->st_wt) {
+            *motif_out = sd_string[nod[ndx].rbs[0]];
+            *spacer_out = sd_spacer_str[nod[ndx].rbs[0]];
+        } else if (tinf->no_mot > -0.5 && rbs2 >= rbs1 &&
+                   rbs2 > nod[ndx].mot.score * tinf->st_wt) {
+            *motif_out = sd_string[nod[ndx].rbs[1]];
+            *spacer_out = sd_spacer_str[nod[ndx].rbs[1]];
+        } else if (nod[ndx].mot.len == 0) {
+            *motif_out = "None";
+            *spacer_out = "None";
+        } else {
+            /* Upstream motif: use a static buffer per-motif.
+               For the SOA output, we store the motif string directly.
+               Since mer_text writes to a buffer, we use a thread-local
+               approach. For simplicity, we point to the sd_string table
+               entry if possible, or a generic description. */
+            *motif_out = "Upstream";
+            {
+                static const char *spacer_bp[] = {
+                    "0bp","1bp","2bp","3bp","4bp","5bp","6bp","7bp",
+                    "8bp","9bp","10bp","11bp","12bp","13bp","14bp","15bp"
+                };
+                if (nod[ndx].mot.spacer >= 0 && nod[ndx].mot.spacer <= 15)
+                    *spacer_out = spacer_bp[nod[ndx].mot.spacer];
+                else
+                    *spacer_out = "None";
+            }
+        }
+    }
+}
+
+/*******************************************************************************
+    SOA allocation and extraction
+*******************************************************************************/
+
+#define ALIGN16(x) (((x) + 15) & ~(size_t)15)
+
+static prodigal_genes_soa_t *extract_soa(prodigal_ctx_t *ctx, int ng) {
+    prodigal_genes_soa_t *soa;
+    size_t n = (size_t)(ng > 0 ? ng : 1);  /* at least 1 to avoid zero alloc */
+    size_t offset = 0;
+    char *base;
+    int i, ndx, sndx;
+
+    /* Calculate total size with 16-byte alignment */
+    size_t sz_begin    = ALIGN16(n * sizeof(int32_t));
+    size_t sz_end      = ALIGN16(n * sizeof(int32_t));
+    size_t sz_strand   = ALIGN16(n * sizeof(int32_t));
+    size_t sz_pleft    = ALIGN16(n * sizeof(int32_t));
+    size_t sz_pright   = ALIGN16(n * sizeof(int32_t));
+    size_t sz_stype    = ALIGN16(n * sizeof(int32_t));
+    size_t sz_cscore   = ALIGN16(n * sizeof(double));
+    size_t sz_sscore   = ALIGN16(n * sizeof(double));
+    size_t sz_rscore   = ALIGN16(n * sizeof(double));
+    size_t sz_uscore   = ALIGN16(n * sizeof(double));
+    size_t sz_tscore   = ALIGN16(n * sizeof(double));
+    size_t sz_conf     = ALIGN16(n * sizeof(double));
+    size_t sz_gc       = ALIGN16(n * sizeof(double));
+    size_t sz_motif    = ALIGN16(n * sizeof(const char *));
+    size_t sz_spacer   = ALIGN16(n * sizeof(const char *));
+
+    size_t total = sz_begin + sz_end + sz_strand + sz_pleft + sz_pright +
+                   sz_stype + sz_cscore + sz_sscore + sz_rscore + sz_uscore +
+                   sz_tscore + sz_conf + sz_gc + sz_motif + sz_spacer;
+
+    soa = (prodigal_genes_soa_t *)malloc(sizeof(prodigal_genes_soa_t));
+    if (soa == NULL) return NULL;
+    memset(soa, 0, sizeof(*soa));
+    soa->n_genes = ng;
+
+    if (ng == 0) {
+        soa->_base = NULL;
+        return soa;
+    }
+
+    /* Single aligned allocation */
+    if (posix_memalign((void **)&base, 16, total) != 0) {
+        free(soa);
+        return NULL;
+    }
+    memset(base, 0, total);
+    soa->_base = base;
+
+    /* Carve out sub-arrays */
+    offset = 0;
+    soa->begin        = (int32_t *)(base + offset); offset += sz_begin;
+    soa->end          = (int32_t *)(base + offset); offset += sz_end;
+    soa->strand       = (int32_t *)(base + offset); offset += sz_strand;
+    soa->partial_left = (int32_t *)(base + offset); offset += sz_pleft;
+    soa->partial_right= (int32_t *)(base + offset); offset += sz_pright;
+    soa->start_type   = (int32_t *)(base + offset); offset += sz_stype;
+    soa->cscore       = (double *)(base + offset);  offset += sz_cscore;
+    soa->sscore       = (double *)(base + offset);  offset += sz_sscore;
+    soa->rscore       = (double *)(base + offset);  offset += sz_rscore;
+    soa->uscore       = (double *)(base + offset);  offset += sz_uscore;
+    soa->tscore       = (double *)(base + offset);  offset += sz_tscore;
+    soa->confidence   = (double *)(base + offset);  offset += sz_conf;
+    soa->gc_cont      = (double *)(base + offset);  offset += sz_gc;
+    soa->rbs_motif    = (const char **)(base + offset); offset += sz_motif;
+    soa->rbs_spacer   = (const char **)(base + offset);
+
+    /* Populate from genes and nodes */
+    for (i = 0; i < ng; i++) {
+        ndx = ctx->genes[i].start_ndx;
+        sndx = ctx->genes[i].stop_ndx;
+
+        soa->begin[i] = ctx->genes[i].begin;
+        soa->end[i] = ctx->genes[i].end;
+        soa->strand[i] = ctx->nodes[ndx].strand;
+
+        /* Partial flags */
+        if ((ctx->nodes[ndx].edge == 1 && ctx->nodes[ndx].strand == 1) ||
+            (ctx->nodes[sndx].edge == 1 && ctx->nodes[ndx].strand == -1))
+            soa->partial_left[i] = 1;
+        if ((ctx->nodes[sndx].edge == 1 && ctx->nodes[ndx].strand == 1) ||
+            (ctx->nodes[ndx].edge == 1 && ctx->nodes[ndx].strand == -1))
+            soa->partial_right[i] = 1;
+
+        /* Start type */
+        if (ctx->nodes[ndx].edge == 1)
+            soa->start_type[i] = 3;
+        else
+            soa->start_type[i] = ctx->nodes[ndx].type;
+
+        /* Scores */
+        soa->cscore[i] = ctx->nodes[ndx].cscore;
+        soa->sscore[i] = ctx->nodes[ndx].sscore;
+        soa->rscore[i] = ctx->nodes[ndx].rscore;
+        soa->uscore[i] = ctx->nodes[ndx].uscore;
+        soa->tscore[i] = ctx->nodes[ndx].tscore;
+        soa->confidence[i] = calculate_confidence(
+            ctx->nodes[ndx].cscore + ctx->nodes[ndx].sscore,
+            ctx->tinf.st_wt);
+        soa->gc_cont[i] = ctx->nodes[ndx].gc_cont;
+
+        /* RBS info */
+        get_rbs_info(ctx->nodes, ndx, &ctx->tinf,
+                     &soa->rbs_motif[i], &soa->rbs_spacer[i]);
+    }
+
+    return soa;
+}
+
+/*******************************************************************************
+    Gene finding — public API
+*******************************************************************************/
+
+static void fill_stats(prodigal_ctx_t *ctx, int ng, prodigal_stats_t *stats,
+                       int best_bin, const char *best_desc) {
+    if (stats == NULL) return;
+    memset(stats, 0, sizeof(*stats));
+    stats->n_genes = ng;
+    stats->n_nodes = ctx->nn;
+    stats->gc_content = ctx->gc;
+    stats->translation_table = ctx->tinf.trans_table;
+    stats->uses_sd = ctx->tinf.uses_sd;
+    stats->best_meta_bin = best_bin;
+    if (best_desc != NULL) {
+        snprintf(stats->best_meta_desc, sizeof(stats->best_meta_desc),
+                 "%s", best_desc);
+    }
+}
+
+int prodigal_find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
+                        prodigal_stats_t *stats_out) {
+    int ng = 0;
+
+    if (ctx == NULL || genes_out == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    *genes_out = NULL;
+
+    if (ctx->config.meta_mode) {
+        /* Metagenomic mode */
+        int i, max_phase = 0;
+        double max_score = -100.0, low, high;
+
+        /* Lazy init metagenomic bins */
+        if (!ctx->meta_initialized) {
+            ctx->meta = (struct _metagenomic_bin *)pdg_alloc(ctx,
+                NUM_META * sizeof(struct _metagenomic_bin));
+            if (ctx->meta == NULL) {
+                PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                              "Failed to allocate metagenomic bins");
+                return PRODIGAL_ERR_NOMEM;
+            }
+            for (i = 0; i < NUM_META; i++) {
+                memset(&ctx->meta[i], 0, sizeof(struct _metagenomic_bin));
+                strcpy(ctx->meta[i].desc, "None");
+                ctx->meta[i].tinf = (struct _training *)pdg_alloc(ctx,
+                    sizeof(struct _training));
+                if (ctx->meta[i].tinf == NULL) {
+                    PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                                  "Failed to allocate meta training");
+                    return PRODIGAL_ERR_NOMEM;
+                }
+                memset(ctx->meta[i].tinf, 0, sizeof(struct _training));
+            }
+            initialize_metagenomic_bins(ctx->meta);
+            ctx->meta_initialized = 1;
+        }
+
+        /* Realloc nodes if needed */
+        if (ctx->slen > ctx->max_slen && ctx->slen > STT_NOD * 8) {
+            struct _node *new_nodes = (struct _node *)pdg_alloc(ctx,
+                (ctx->slen / 8) * sizeof(struct _node));
+            if (new_nodes == NULL) {
+                PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                              "Failed to allocate nodes");
+                return PRODIGAL_ERR_NOMEM;
+            }
+            pdg_free(ctx, ctx->nodes);
+            ctx->nodes = new_nodes;
+            memset(ctx->nodes, 0, (ctx->slen / 8) * sizeof(struct _node));
+            ctx->max_slen = ctx->slen;
+        }
+
+        /* GC range filtering */
+        low = 0.88495 * ctx->gc - 0.0102337;
+        if (low > 0.65) low = 0.65;
+        high = 0.86596 * ctx->gc + 0.1131991;
+        if (high < 0.35) high = 0.35;
+
+        /* Try all metagenomic bins */
+        for (i = 0; i < NUM_META; i++) {
+            int ipath;
+
+            /* Progress callback */
+            if (ctx->config.progress_callback) {
+                int cancelled = ctx->config.progress_callback(
+                    "metagenomic scoring", (double)i / NUM_META,
+                    ctx->config.progress_user_data);
+                if (cancelled) {
+                    PDG_SET_ERROR(ctx, PRODIGAL_ERR_CANCELLED, "Cancelled");
+                    return PRODIGAL_ERR_CANCELLED;
+                }
+            }
+
+            if (i == 0 || ctx->meta[i].tinf->trans_table !=
+                ctx->meta[i-1].tinf->trans_table) {
+                memset(ctx->nodes, 0, ctx->nn * sizeof(struct _node));
+                ctx->nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen,
+                                    ctx->nodes, ctx->config.closed_ends,
+                                    ctx->mlist, ctx->nmask,
+                                    ctx->meta[i].tinf);
+                qsort(ctx->nodes, ctx->nn, sizeof(struct _node),
+                      &compare_nodes);
+            }
+
+            if (ctx->meta[i].tinf->gc < low ||
+                ctx->meta[i].tinf->gc > high)
+                continue;
+
+            reset_node_scores(ctx->nodes, ctx->nn);
+            score_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, ctx->nn,
+                        ctx->meta[i].tinf, ctx->config.closed_ends, 1);
+            record_overlapping_starts(ctx->nodes, ctx->nn,
+                                      ctx->meta[i].tinf, 1);
+            ipath = dprog(ctx->nodes, ctx->nn, ctx->meta[i].tinf, 1);
+
+            if (ipath >= 0 && ctx->nodes[ipath].score > max_score) {
+                max_phase = i;
+                max_score = ctx->nodes[ipath].score;
+                eliminate_bad_genes(ctx->nodes, ipath, ctx->meta[i].tinf);
+                memset(ctx->genes, 0, MAX_GENES * sizeof(struct _gene));
+                ng = add_genes(ctx->genes, ctx->nodes, ipath);
+                tweak_final_starts(ctx->genes, ng, ctx->nodes, ctx->nn,
+                                   ctx->meta[i].tinf);
+                record_gene_data(ctx->genes, ng, ctx->nodes,
+                                 ctx->meta[i].tinf, 1);
+            }
+        }
+
+        /* Recover best-bin nodes for output */
+        memset(ctx->nodes, 0, ctx->nn * sizeof(struct _node));
+        ctx->nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                            ctx->config.closed_ends, ctx->mlist, ctx->nmask,
+                            ctx->meta[max_phase].tinf);
+        qsort(ctx->nodes, ctx->nn, sizeof(struct _node), &compare_nodes);
+        score_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, ctx->nn,
+                    ctx->meta[max_phase].tinf, ctx->config.closed_ends, 1);
+
+        /* Use best bin's training for SOA extraction */
+        memcpy(&ctx->tinf, ctx->meta[max_phase].tinf,
+               sizeof(struct _training));
+
+        /* ng was set during the loop above for the best bin */
+        if (max_score <= -100.0) ng = 0;
+
+        *genes_out = extract_soa(ctx, ng);
+        fill_stats(ctx, ng, stats_out, max_phase,
+                   ctx->meta[max_phase].desc);
+
+    } else {
+        /* Single genome mode */
+        if (!ctx->trained) {
+            PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
+                          "No training data loaded (call prodigal_train or "
+                          "prodigal_load_training first)");
+            return PRODIGAL_ERR_INVALID_INPUT;
+        }
+
+        ng = run_gene_pipeline(ctx);
+        if (ng < 0) return ctx->error_code;
+
+        *genes_out = extract_soa(ctx, ng);
+        fill_stats(ctx, ng, stats_out, -1, NULL);
+    }
+
+    if (*genes_out == NULL) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
+                      "Failed to allocate SOA output");
+        return PRODIGAL_ERR_NOMEM;
+    }
+
+    return PRODIGAL_OK;
+}
+
+int prodigal_find_genes_aos(prodigal_ctx_t *ctx, prodigal_genes_t **genes_out,
+                            prodigal_stats_t *stats_out) {
+    prodigal_genes_soa_t *soa = NULL;
+    prodigal_genes_t *aos;
+    int rc, i;
+
+    rc = prodigal_find_genes(ctx, &soa, stats_out);
+    if (rc != PRODIGAL_OK) return rc;
+
+    /* Convert SOA to AOS */
+    aos = (prodigal_genes_t *)malloc(sizeof(prodigal_genes_t));
+    if (aos == NULL) {
+        prodigal_genes_free(soa);
+        return PRODIGAL_ERR_NOMEM;
+    }
+    memset(aos, 0, sizeof(*aos));
+    aos->n_genes = soa->n_genes;
+
+    if (soa->n_genes > 0) {
+        aos->_base = malloc(soa->n_genes * sizeof(prodigal_gene_t));
+        if (aos->_base == NULL) {
+            free(aos);
+            prodigal_genes_free(soa);
+            return PRODIGAL_ERR_NOMEM;
+        }
+        aos->genes = (prodigal_gene_t *)aos->_base;
+
+        for (i = 0; i < soa->n_genes; i++) {
+            aos->genes[i].begin = soa->begin[i];
+            aos->genes[i].end = soa->end[i];
+            aos->genes[i].strand = soa->strand[i];
+            aos->genes[i].partial_left = soa->partial_left[i];
+            aos->genes[i].partial_right = soa->partial_right[i];
+            aos->genes[i].start_type = soa->start_type[i];
+            aos->genes[i].cscore = soa->cscore[i];
+            aos->genes[i].sscore = soa->sscore[i];
+            aos->genes[i].rscore = soa->rscore[i];
+            aos->genes[i].uscore = soa->uscore[i];
+            aos->genes[i].tscore = soa->tscore[i];
+            aos->genes[i].confidence = soa->confidence[i];
+            aos->genes[i].gc_cont = soa->gc_cont[i];
+            aos->genes[i].rbs_motif = soa->rbs_motif[i];
+            aos->genes[i].rbs_spacer = soa->rbs_spacer[i];
+        }
+    }
+
+    prodigal_genes_free(soa);
+    *genes_out = aos;
+    return PRODIGAL_OK;
+}
+
+/*******************************************************************************
+    Output cleanup
+*******************************************************************************/
+
+void prodigal_genes_free(prodigal_genes_soa_t *genes) {
+    if (genes == NULL) return;
+    free(genes->_base);
+    free(genes);
+}
+
+void prodigal_genes_aos_free(prodigal_genes_t *genes) {
+    if (genes == NULL) return;
+    free(genes->_base);
+    free(genes);
+}

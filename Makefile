@@ -25,33 +25,64 @@ CFLAGS  += -pedantic -Wall -O3 -DSUPPORT_GZIP_COMPRESSED
 LFLAGS = -lm $(LDFLAGS) -lz
 
 TARGET  = prodigal
-ZTARGET  = zprodigal
-SOURCES = $(shell echo *.c)
-HEADERS = $(shell echo *.h)
-OBJECTS = $(SOURCES:.c=.o)
-ZOBJECTS = $(SOURCES:.c=.oz)
-
 INSTALLDIR  = /usr/local/bin
 
+# Source file groups
+CORE_SOURCES = bitmap.c dprog.c gene.c metagenomic.c node.c sequence.c training.c
+API_SOURCES  = prodigal_api.c
+CLI_SOURCE   = main.c
+TEST_SOURCE  = test_api.c
+
+HEADERS = $(shell echo *.h)
+
+CORE_OBJS = $(CORE_SOURCES:.c=.o)
+API_OBJ   = $(API_SOURCES:.c=.o)
+LIB_OBJS  = $(CORE_OBJS) $(API_OBJ)
+CLI_OBJ   = $(CLI_SOURCE:.c=.o)
+
+# Default: build CLI binary
 all: $(TARGET)
 
-$(TARGET): $(OBJECTS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LFLAGS)
-
+# Core and API objects
 %.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Static library (no main, no zlib dependency in library itself)
+libprodigal.a: $(LIB_OBJS)
+	ar rcs $@ $^
+
+# CLI binary: link main.o with static library
+$(TARGET): $(CLI_OBJ) libprodigal.a
+	$(CC) $(CFLAGS) -o $@ $(CLI_OBJ) -L. -lprodigal $(LFLAGS)
+
+# PIC objects for shared library
+%.pic.o: %.c $(HEADERS)
+	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
+
+LIB_PIC_OBJS = $(CORE_SOURCES:.c=.pic.o) $(API_SOURCES:.c=.pic.o)
+
+# Shared library
+libprodigal.so: $(LIB_PIC_OBJS)
+	$(CC) -shared -o $@ $^ -lm
+
+# Test runner
+test_api: $(TEST_SOURCE) libprodigal.a
+	$(CC) $(CFLAGS) -o $@ $< -L. -lprodigal $(LFLAGS)
+
+test: test_api
+	./test_api
 
 install: $(TARGET)
 	install -d -m 0755 $(INSTALLDIR)
 	install -m 0755 $(TARGET) $(INSTALLDIR)
- 
+
 uninstall:
 	-rm $(INSTALLDIR)/$(TARGET)
 
 clean:
-	-rm -f $(OBJECTS) $(ZOBJECTS)
- 
-distclean: clean
-	-rm -f $(TARGET)
+	-rm -f *.o *.pic.o
 
-.PHONY: all install uninstall clean distclean
+distclean: clean
+	-rm -f $(TARGET) libprodigal.a libprodigal.so test_api
+
+.PHONY: all install uninstall clean distclean test
