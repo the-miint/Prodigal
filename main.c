@@ -24,8 +24,8 @@
 #include "fptr.h"
 
 
-#define VERSION "2.6.3"
-#define DATE "February, 2016"
+#define VERSION "2.6.4"
+#define DATE "April, 2026"
 
 #define MIN_SINGLE_GENOME 20000
 #define IDEAL_SINGLE_GENOME 100000
