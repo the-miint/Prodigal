@@ -35,29 +35,38 @@ TEST_SOURCE  = test_api.c
 
 HEADERS = $(shell echo *.h)
 
-CORE_OBJS = $(CORE_SOURCES:.c=.o)
-API_OBJ   = $(API_SOURCES:.c=.o)
-LIB_OBJS  = $(CORE_OBJS) $(API_OBJ)
-CLI_OBJ   = $(CLI_SOURCE:.c=.o)
+# CLI objects (no PRODIGAL_NO_MAIN)
+CLI_OBJ = $(CLI_SOURCE:.c=.o)
+CLI_CORE_OBJS = $(CORE_SOURCES:.c=.o)
+CLI_API_OBJ = $(API_SOURCES:.c=.o)
+
+# Library objects (with PRODIGAL_NO_MAIN to suppress stderr writes)
+LIB_CORE_OBJS = $(CORE_SOURCES:.c=.lib.o)
+LIB_API_OBJ = $(API_SOURCES:.c=.lib.o)
+LIB_OBJS = $(LIB_CORE_OBJS) $(LIB_API_OBJ)
 
 # Default: build CLI binary
 all: $(TARGET)
 
-# Core and API objects
+# CLI objects: compiled WITHOUT PRODIGAL_NO_MAIN
 %.o: %.c $(HEADERS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Static library (no main, no zlib dependency in library itself)
+# Library objects: compiled WITH PRODIGAL_NO_MAIN (suppresses stderr in core)
+%.lib.o: %.c $(HEADERS)
+	$(CC) $(CFLAGS) -DPRODIGAL_NO_MAIN -c -o $@ $<
+
+# Static library
 libprodigal.a: $(LIB_OBJS)
 	ar rcs $@ $^
 
-# CLI binary: link main.o with static library
-$(TARGET): $(CLI_OBJ) libprodigal.a
-	$(CC) $(CFLAGS) -o $@ $(CLI_OBJ) -L. -lprodigal $(LFLAGS)
+# CLI binary: link CLI main.o + core objects (not using lib to keep stderr)
+$(TARGET): $(CLI_OBJ) $(CLI_CORE_OBJS) $(CLI_API_OBJ)
+	$(CC) $(CFLAGS) -o $@ $^ $(LFLAGS)
 
 # PIC objects for shared library
 %.pic.o: %.c $(HEADERS)
-	$(CC) $(CFLAGS) -fPIC -c -o $@ $<
+	$(CC) $(CFLAGS) -fPIC -DPRODIGAL_NO_MAIN -c -o $@ $<
 
 LIB_PIC_OBJS = $(CORE_SOURCES:.c=.pic.o) $(API_SOURCES:.c=.pic.o)
 
@@ -65,9 +74,9 @@ LIB_PIC_OBJS = $(CORE_SOURCES:.c=.pic.o) $(API_SOURCES:.c=.pic.o)
 libprodigal.so: $(LIB_PIC_OBJS)
 	$(CC) -shared -o $@ $^ -lm
 
-# Test runner
+# Test runner (linked against static library)
 test_api: $(TEST_SOURCE) libprodigal.a
-	$(CC) $(CFLAGS) -o $@ $< -L. -lprodigal $(LFLAGS)
+	$(CC) $(CFLAGS) -DPRODIGAL_NO_MAIN -o $@ $< -L. -lprodigal $(LFLAGS)
 
 test: test_api
 	./test_api
@@ -80,7 +89,7 @@ uninstall:
 	-rm $(INSTALLDIR)/$(TARGET)
 
 clean:
-	-rm -f *.o *.pic.o
+	-rm -f *.o *.lib.o *.pic.o
 
 distclean: clean
 	-rm -f $(TARGET) libprodigal.a libprodigal.so test_api
