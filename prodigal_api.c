@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#ifdef _WIN32
+#include <malloc.h>   /* _aligned_malloc, _aligned_free */
+#endif
 #include "prodigal_internal.h"
 
 /*******************************************************************************
@@ -712,8 +715,18 @@ static prodigal_genes_soa_t *extract_soa(prodigal_ctx_t *ctx, int ng) {
         return soa;
     }
 
-    /* Single aligned allocation */
-    if (posix_memalign((void **)&base, 16, total) != 0) {
+    /* Single aligned allocation — portable across POSIX, Windows, WASM */
+#if defined(_WIN32)
+    base = (char *)_aligned_malloc(total, 16);
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__APPLE__)
+    base = (char *)aligned_alloc(16, total);
+#else
+    {
+        int pma_rv = posix_memalign((void **)&base, 16, total);
+        if (pma_rv != 0) base = NULL;
+    }
+#endif
+    if (base == NULL) {
         free(soa);
         return NULL;
     }
@@ -1008,9 +1021,17 @@ int prodigal_find_genes_aos(prodigal_ctx_t *ctx, prodigal_genes_t **genes_out,
     Output cleanup
 *******************************************************************************/
 
+static void free_aligned(void *ptr) {
+#if defined(_WIN32)
+    _aligned_free(ptr);
+#else
+    free(ptr);
+#endif
+}
+
 void prodigal_genes_free(prodigal_genes_soa_t *genes) {
     if (genes == NULL) return;
-    free(genes->_base);
+    free_aligned(genes->_base);
     free(genes);
 }
 
