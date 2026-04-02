@@ -1,3 +1,8 @@
+VERSION 2.6.4
+
+* Added a reentrant embeddable API
+* Added basic CI testing (Linux, macOS, Windows, WASM)
+
 VERSION 2.6.3
 
 * Fixed a bug in protein translation output of partial genes where TTG/GTG
