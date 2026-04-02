@@ -182,12 +182,17 @@
 extern "C" {
 #endif
 
-/* Symbol visibility */
+/* Symbol visibility.
+   For static linking (the default), PRODIGAL_API is empty.
+   For building a shared library (DLL), define PRODIGAL_BUILDING_DLL.
+   For consuming a shared library on Windows, define PRODIGAL_DLL. */
 #if defined(_WIN32) || defined(__CYGWIN__)
-  #ifdef PRODIGAL_BUILDING_DLL
+  #if defined(PRODIGAL_BUILDING_DLL)
     #define PRODIGAL_API __declspec(dllexport)
-  #else
+  #elif defined(PRODIGAL_DLL)
     #define PRODIGAL_API __declspec(dllimport)
+  #else
+    #define PRODIGAL_API
   #endif
 #elif defined(__GNUC__) && __GNUC__ >= 4
   #define PRODIGAL_API __attribute__((visibility("default")))

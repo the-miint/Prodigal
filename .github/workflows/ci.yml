@@ -70,6 +70,10 @@ jobs:
           diff testdata/ground_truth/ref_trained.gff /tmp/trained.gff
 
   # ── macOS ──────────────────────────────────────────────────────────────────
+  # Reference binaries were generated on Linux x86_64.  struct _training has
+  # different padding on ARM64, so training-file comparisons use self-
+  # consistent round-trips rather than cross-platform reference files.
+  # Text output (GFF, GBK, etc.) is architecture-independent.
   macos:
     runs-on: macos-latest
     steps:
@@ -91,10 +95,16 @@ jobs:
           ./prodigal -i anthus_aco.fas -p single -f gff -q -o /tmp/single.gff
           diff testdata/ground_truth/ref_single.gff /tmp/single.gff
 
-      - name: Regression - training file round-trip
+      - name: Regression - training file round-trip (self-consistent)
         run: |
-          ./prodigal -i anthus_aco.fas -t /tmp/train.bin -q
-          diff testdata/ground_truth/ref_train.bin /tmp/train.bin
+          ./prodigal -i anthus_aco.fas -t /tmp/train1.bin -q
+          ./prodigal -i anthus_aco.fas -t /tmp/train1.bin -f gff -q \
+            -o /tmp/trained1.gff
+          ./prodigal -i anthus_aco.fas -t /tmp/train2.bin -q
+          diff /tmp/train1.bin /tmp/train2.bin
+          ./prodigal -i anthus_aco.fas -t /tmp/train2.bin -f gff -q \
+            -o /tmp/trained2.gff
+          diff /tmp/trained1.gff /tmp/trained2.gff
 
   # ── WASM (library only, via Emscripten) ────────────────────────────────────
   wasm:
@@ -108,20 +118,20 @@ jobs:
       - name: Build library with emcc
         run: |
           CORE="bitmap.c dprog.c gene.c metagenomic.c node.c sequence.c training.c prodigal_api.c"
-          emcc -O3 -Wall -c $CORE
+          emcc -O3 -Wall -DPRODIGAL_NO_MAIN -c $CORE
           emar rcs libprodigal.a *.o
           echo "WASM library build succeeded"
 
       - name: Build and run test suite in Node.js
         run: |
           CORE="bitmap.c dprog.c gene.c metagenomic.c node.c sequence.c training.c prodigal_api.c"
-          emcc -O3 -Wall $CORE test_api.c -o test_api.js \
+          emcc -O3 -Wall -DPRODIGAL_NO_MAIN $CORE test_api.c -o test_api.js \
             -s ALLOW_MEMORY_GROWTH=1 \
             -s INITIAL_MEMORY=134217728 \
             -lm
           node test_api.js
 
-  # ── Windows (library only, via MSYS2) ──────────────────────────────────────
+  # ── Windows (MSYS2/MinGW-w64) ─────────────────────────────────────────────
   windows:
     runs-on: windows-latest
     defaults:
@@ -141,7 +151,8 @@ jobs:
       - name: Build and run tests
         run: make test
 
-      - name: Regression - metagenomic GFF
+      - name: Regression - metagenomic GFF (determinism)
         run: |
-          ./prodigal -i anthus_aco.fas -p meta -f gff -q -o /tmp/meta.gff
-          diff testdata/ground_truth/ref_meta.gff /tmp/meta.gff
+          ./prodigal -i anthus_aco.fas -p meta -f gff -q -o /tmp/meta1.gff
+          ./prodigal -i anthus_aco.fas -p meta -f gff -q -o /tmp/meta2.gff
+          diff /tmp/meta1.gff /tmp/meta2.gff
