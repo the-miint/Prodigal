@@ -143,7 +143,7 @@ jobs:
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
-          install: mingw-w64-ucrt-x86_64-gcc make mingw-w64-ucrt-x86_64-zlib
+          install: mingw-w64-ucrt-x86_64-gcc make mingw-w64-ucrt-x86_64-zlib diffutils
 
       - name: Build CLI + library
         run: make
