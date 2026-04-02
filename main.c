@@ -20,11 +20,7 @@
 
 #include <sys/stat.h>
 #include <unistd.h>
-#include "sequence.h"
-#include "metagenomic.h"
-#include "node.h"
-#include "dprog.h"
-#include "gene.h"
+#include "prodigal_internal.h"
 #include "fptr.h"
 
 
@@ -35,6 +31,8 @@
 #define IDEAL_SINGLE_GENOME 100000
 
 
+#ifndef PRODIGAL_NO_MAIN
+
 void version();
 void usage(char *);
 void help();
@@ -42,74 +40,38 @@ int copy_standard_input_to_file(char *, int);
 
 int main(int argc, char *argv[]) {
 
-  int rv, slen, nn, ng, i, ipath, *gc_frame, do_training, output, max_phase;
-  int closed, do_mask, nmask, force_nonsd, user_tt, is_meta, num_seq, quiet;
-  int piped, max_slen, fnum;
+  int rv, nn, ng, i, ipath, do_training, output, max_phase;
+  int user_tt, num_seq, quiet;
+  int piped, fnum;
   double max_score, gc, low, high;
-  unsigned char *seq, *rseq, *useq;
-  char *train_file, *start_file, *trans_file, *nuc_file; 
+  char *train_file, *start_file, *trans_file, *nuc_file;
   char *input_file, *output_file, input_copy[MAX_LINE];
   char cur_header[MAX_LINE], new_header[MAX_LINE], short_header[MAX_LINE];
   FILE *output_ptr, *start_ptr, *trans_ptr, *nuc_ptr;
   fptr input_ptr = NULL;
   struct stat fbuf;
   pid_t pid;
-  struct _node *nodes;
-  struct _gene *genes;
-  struct _training tinf;
-  struct _metagenomic_bin meta[NUM_META];
-  mask mlist[MAX_MASKS];
 
-  /* Allocate memory and initialize variables */
-  seq = (unsigned char *)malloc(MAX_SEQ/4*sizeof(unsigned char));
-  rseq = (unsigned char *)malloc(MAX_SEQ/4*sizeof(unsigned char));
-  useq = (unsigned char *)malloc(MAX_SEQ/8*sizeof(unsigned char));
-  nodes = (struct _node *)malloc(STT_NOD*sizeof(struct _node));
-  genes = (struct _gene *)malloc(MAX_GENES*sizeof(struct _gene));
-  if(seq == NULL || rseq == NULL || nodes == NULL || genes == NULL) {
-    fprintf(stderr, "\nError: Malloc failed on sequence/orfs\n\n"); exit(1);
-  }
-  memset(seq, 0, MAX_SEQ/4*sizeof(unsigned char));
-  memset(rseq, 0, MAX_SEQ/4*sizeof(unsigned char));
-  memset(useq, 0, MAX_SEQ/8*sizeof(unsigned char));
-  memset(nodes, 0, STT_NOD*sizeof(struct _node));
-  memset(genes, 0, MAX_GENES*sizeof(struct _gene));
-  memset(&tinf, 0, sizeof(struct _training));
+  /* Library context and config */
+  prodigal_config_t config;
+  prodigal_ctx_t *ctx;
 
-  for(i = 0; i < NUM_META; i++) {
-    memset(&meta[i], 0, sizeof(struct _metagenomic_bin));
-    strcpy(meta[i].desc, "None");
-    meta[i].tinf = (struct _training *)malloc(sizeof(struct _training));
-    if(meta[i].tinf == NULL) {
-      fprintf(stderr, "\nError: Malloc failed on training structure.\n\n"); 
-      exit(1);
-    }
-    memset(meta[i].tinf, 0, sizeof(struct _training));
-  }
-  nn = 0; slen = 0; ipath = 0; ng = 0; nmask = 0;
-  user_tt = 0; is_meta = 0; num_seq = 0; quiet = 0;
+  /* Initialize config with defaults */
+  prodigal_config_init(&config);
+
+  nn = 0; ipath = 0; ng = 0;
+  user_tt = 0; num_seq = 0; quiet = 0;
   max_phase = 0; max_score = -100.0;
   train_file = NULL; do_training = 0;
   start_file = NULL; trans_file = NULL; nuc_file = NULL;
   start_ptr = stdout; trans_ptr = stdout; nuc_ptr = stdout;
   input_file = NULL; output_file = NULL; piped = 0;
-  output_ptr = stdout; max_slen = 0;
-  output = 0; closed = 0; do_mask = 0; force_nonsd = 0;
+  output_ptr = stdout;
+  output = 0;
 
   /* Filename for input copy if needed */
   pid = getpid();
   sprintf(input_copy, "tmp.prodigal.stdin.%d", pid);
-
-  /***************************************************************************
-    Set the start score weight.  Changing this number can dramatically
-    affect the performance of the program.  Some genomes want it high (6+),
-    and some prefer it low (2.5-3).  Attempts were made to determine this 
-    weight dynamically, but none were successful.  Therefore, we just 
-    manually set the weight to an average value that seems to work decently 
-    for 99% of genomes.  This problem may be revisited in future versions.
-  ***************************************************************************/
-  tinf.st_wt = 4.35;
-  tinf.trans_table = 11;
 
   /* Parse the command line arguments */
   for(i = 1; i < argc; i++) {
@@ -123,13 +85,13 @@ int main(int argc, char *argv[]) {
        strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "-P") == 0))
       usage("-a/-f/-g/-i/-o/-p/-s options require parameters.");
     else if(strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "-C") == 0)
-      closed = 1;
+      config.closed_ends = 1;
     else if(strcmp(argv[i], "-q") == 0 || strcmp(argv[i], "-Q") == 0)
       quiet = 1;
     else if(strcmp(argv[i], "-m") == 0 || strcmp(argv[i], "-M") == 0)
-      do_mask = 1;
+      config.mask_regions = 1;
     else if(strcmp(argv[i], "-n") == 0 || strcmp(argv[i], "-N") == 0)
-      force_nonsd = 1;
+      config.force_nonsd = 1;
     else if(strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "-H") == 0) help();
     else if(strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "-V") == 0) version();
     else if(strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "-A") == 0) {
@@ -157,19 +119,19 @@ int main(int argc, char *argv[]) {
       i++;
     }
     else if(strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "-G") == 0) {
-      tinf.trans_table = atoi(argv[i+1]);
-      if(tinf.trans_table < 1 || tinf.trans_table > 25 || tinf.trans_table == 7
-         || tinf.trans_table == 8 || (tinf.trans_table >= 17 && tinf.trans_table
-         <= 20))
+      config.trans_table = atoi(argv[i+1]);
+      if(config.trans_table < 1 || config.trans_table > 25 ||
+         config.trans_table == 7 || config.trans_table == 8 ||
+         (config.trans_table >= 17 && config.trans_table <= 20))
         usage("Invalid translation table specified.");
-      user_tt = tinf.trans_table;
+      user_tt = config.trans_table;
       i++;
     }
     else if(strcmp(argv[i], "-p") == 0 || strcmp(argv[i], "-P") == 0) {
       if(argv[i+1][0] == '0' || argv[i+1][0] == 's' || argv[i+1][0] ==
-              'S') is_meta = 0;
+              'S') config.meta_mode = 0;
       else if(argv[i+1][0] == '1' || argv[i+1][0] == 'm' || argv[i+1][0] ==
-              'M') is_meta = 1; 
+              'M') config.meta_mode = 1;
       else usage("Invalid meta/single genome type specified.");
       i++;
     }
@@ -192,6 +154,13 @@ int main(int argc, char *argv[]) {
     else usage("Unknown option.");
   }
 
+  /* Create the library context */
+  ctx = prodigal_create(&config);
+  if(ctx == NULL) {
+    fprintf(stderr, "\nError: Failed to create Prodigal context.\n\n");
+    exit(1);
+  }
+
   /* Print header */
   if(quiet == 0) {
     fprintf(stderr, "-------------------------------------\n");
@@ -203,37 +172,38 @@ int main(int argc, char *argv[]) {
 
   /* Read in the training file (if specified) */
   if(train_file != NULL) {
-    if(is_meta == 1) {
+    if(config.meta_mode == 1) {
       fprintf(stderr, "\nError: cannot specify metagenomic sequence with a");
       fprintf(stderr, " training file.\n");
       exit(2);
-    } 
-    rv = read_training_file(train_file, &tinf);
+    }
+    rv = read_training_file(train_file, &ctx->tinf);
     if(rv == 1) do_training = 1;
     else {
-      if(force_nonsd == 1) { 
+      if(config.force_nonsd == 1) {
         fprintf(stderr, "\nError: cannot force non-SD finder with a training");
         fprintf(stderr, " file already created!\n"); exit(3);
       }
       if(quiet == 0)
         fprintf(stderr, "Reading in training data from file %s...", train_file);
-      if(user_tt > 0 && user_tt != tinf.trans_table) { 
+      if(user_tt > 0 && user_tt != ctx->tinf.trans_table) {
         fprintf(stderr, "\n\nWarning: user-specified translation table does");
         fprintf(stderr, "not match the one in the specified training file! \n\n");
       }
-      if(rv == -1) { 
-        fprintf(stderr, "\n\nError: training file did not read correctly!\n"); 
-        exit(4); 
+      if(rv == -1) {
+        fprintf(stderr, "\n\nError: training file did not read correctly!\n");
+        exit(4);
       }
+      ctx->trained = 1;
       if(quiet == 0) {
-        fprintf(stderr, "done!\n"); 
+        fprintf(stderr, "done!\n");
         fprintf(stderr, "-------------------------------------\n");
       }
     }
   }
 
   /* Determine where standard input is coming from and react accordingly */
-  if(is_meta == 0 && train_file == NULL && input_file == NULL) {
+  if(config.meta_mode == 0 && train_file == NULL && input_file == NULL) {
     fnum = fileno(stdin);
     if(fstat(fnum, &fbuf) == -1) {
       fprintf(stderr, "\nError: can't fstat standard input.\n\n");
@@ -283,7 +253,7 @@ int main(int argc, char *argv[]) {
   if(trans_file != NULL) {
     trans_ptr = fopen(trans_file, "w");
     if(trans_ptr == NULL) {
-      fprintf(stderr, "\nError: can't open translation file %s.\n\n", 
+      fprintf(stderr, "\nError: can't open translation file %s.\n\n",
               trans_file);
       exit(8);
     }
@@ -291,7 +261,7 @@ int main(int argc, char *argv[]) {
   if(nuc_file != NULL) {
     nuc_ptr = fopen(nuc_file, "w");
     if(nuc_ptr == NULL) {
-      fprintf(stderr, "\nError: can't open gene nucleotide file %s.\n\n", 
+      fprintf(stderr, "\nError: can't open gene nucleotide file %s.\n\n",
               nuc_file);
       exit(16);
     }
@@ -299,121 +269,56 @@ int main(int argc, char *argv[]) {
 
   /***************************************************************************
     Single Genome Training:  Read in the sequence(s) and perform the
-    training on them.
+    training on them.  Uses the library context for all state.
   ***************************************************************************/
-  if(is_meta == 0 && (do_training == 1 || (do_training == 0 && train_file == 
-     NULL))) {
+  if(config.meta_mode == 0 && (do_training == 1 || (do_training == 0 &&
+     train_file == NULL))) {
     if(quiet == 0) {
       fprintf(stderr, "Request:  Single Genome, Phase:  Training\n");
-      fprintf(stderr, "Reading in the sequence(s) to train..."); 
+      fprintf(stderr, "Reading in the sequence(s) to train...");
     }
-    slen = read_seq_training(input_ptr, seq, useq, &(tinf.gc), do_mask, mlist,
-                             &nmask);
-    if(slen == 0) {
+
+    /* Read sequences directly into context buffers using existing FILE* I/O */
+    ctx->slen = read_seq_training(input_ptr, ctx->seq, ctx->useq,
+                                  &(ctx->tinf.gc), config.mask_regions,
+                                  ctx->mlist, &ctx->nmask);
+    if(ctx->slen == 0) {
       fprintf(stderr, "\n\nSequence read failed (file must be Fasta, ");
       fprintf(stderr, "Genbank, or EMBL format).\n\n");
       exit(9);
     }
-    if(slen < MIN_SINGLE_GENOME) {
+    if(ctx->slen < MIN_SINGLE_GENOME) {
       fprintf(stderr, "\n\nError:  Sequence must be %d", MIN_SINGLE_GENOME);
-      fprintf(stderr, " characters (only %d read).\n(Consider", slen);
+      fprintf(stderr, " characters (only %d read).\n(Consider", ctx->slen);
       fprintf(stderr, " running with the -p meta option or finding");
       fprintf(stderr, " more contigs from the same genome.)\n\n");
       exit(10);
     }
-    if(slen < IDEAL_SINGLE_GENOME) {
+    if(ctx->slen < IDEAL_SINGLE_GENOME) {
       fprintf(stderr, "\n\nWarning:  ideally Prodigal should be given at");
       fprintf(stderr, " least %d bases for ", IDEAL_SINGLE_GENOME);
       fprintf(stderr, "training.\nYou may get better results with the ");
       fprintf(stderr, "-p meta option.\n\n");
     }
-    rcom_seq(seq, rseq, useq, slen);
+    rcom_seq(ctx->seq, ctx->rseq, ctx->useq, ctx->slen);
+    ctx->gc = ctx->tinf.gc;
     if(quiet == 0) {
-      fprintf(stderr, "%d bp seq created, %.2f pct GC\n", slen, tinf.gc*100.0);
+      fprintf(stderr, "%d bp seq created, %.2f pct GC\n", ctx->slen,
+              ctx->tinf.gc*100.0);
     }
 
-    /***********************************************************************
-      Find all the potential starts and stops, sort them, and create a 
-      comprehensive list of nodes for dynamic programming.
-    ***********************************************************************/
+    /* Use library training pipeline */
     if(quiet == 0) {
-      fprintf(stderr, "Locating all potential starts and stops..."); 
+      fprintf(stderr, "Locating all potential starts and stops...");
     }
-    if(slen > max_slen && slen > STT_NOD*8) {
-      nodes = (struct _node *)realloc(nodes, (int)(slen/8)*sizeof(struct _node));
-      if(nodes == NULL) {
-        fprintf(stderr, "Realloc failed on nodes\n\n");
-        exit(11);
-      }
-      max_slen = slen;
-    }
-    nn = add_nodes(seq, rseq, slen, nodes, closed, mlist, nmask, &tinf);
-    qsort(nodes, nn, sizeof(struct _node), &compare_nodes);
-    if(quiet == 0) {
-      fprintf(stderr, "%d nodes\n", nn); 
-    }
-
-    /***********************************************************************
-      Scan all the ORFS looking for a potential GC bias in a particular
-      codon position.  This information will be used to acquire a good
-      initial set of genes.
-    ***********************************************************************/
-    if(quiet == 0) {
-      fprintf(stderr, "Looking for GC bias in different frames...");
-    }
-    gc_frame = calc_most_gc_frame(seq, slen);
-    if(gc_frame == NULL) {
-      fprintf(stderr, "Malloc failed on gc frame plot\n\n");
+    rv = prodigal_train(ctx);
+    if(rv != PRODIGAL_OK) {
+      fprintf(stderr, "\nError: training failed: %s\n",
+              prodigal_last_error(ctx));
       exit(11);
     }
-    record_gc_bias(gc_frame, nodes, nn, &tinf);
     if(quiet == 0) {
-      fprintf(stderr, "frame bias scores: %.2f %.2f %.2f\n", tinf.bias[0],
-              tinf.bias[1], tinf.bias[2]); 
-    }
-    free(gc_frame);
-
-    /***********************************************************************
-      Do an initial dynamic programming routine with just the GC frame
-      bias used as a scoring function.  This will get an initial set of 
-      genes to train on. 
-    ***********************************************************************/
-    if(quiet == 0) {
-      fprintf(stderr, "Building initial set of genes to train from...");
-    }
-    record_overlapping_starts(nodes, nn, &tinf, 0);
-    ipath = dprog(nodes, nn, &tinf, 0);
-    if(quiet == 0) {
-      fprintf(stderr, "done!\n"); 
-    }
-
-    /***********************************************************************
-      Gather dicodon statistics for the training set.  Score the entire set
-      of nodes.                               
-    ***********************************************************************/
-    if(quiet == 0) {
-      fprintf(stderr, "Creating coding model and scoring nodes...");
-    }
-    calc_dicodon_gene(&tinf, seq, rseq, slen, nodes, ipath);
-    raw_coding_score(seq, rseq, slen, nodes, nn, &tinf);
-    if(quiet == 0) {
-      fprintf(stderr, "done!\n"); 
-    }
-
-    /***********************************************************************
-      Determine if this organism uses Shine-Dalgarno or not and score the 
-      nodes appropriately.
-    ***********************************************************************/
-    if(quiet == 0) {
-      fprintf(stderr, "Examining upstream regions and training starts...");
-    }
-    rbs_score(seq, rseq, slen, nodes, nn, &tinf);
-    train_starts_sd(seq, rseq, slen, nodes, nn, &tinf);
-    determine_sd_usage(&tinf);
-    if(force_nonsd == 1) tinf.uses_sd = 0;
-    if(tinf.uses_sd == 0) train_starts_nonsd(seq, rseq, slen, nodes, nn, &tinf);
-    if(quiet == 0) {
-      fprintf(stderr, "done!\n"); 
+      fprintf(stderr, "done!\n");
     }
 
     /* If training specified, write the training file and exit. */
@@ -421,39 +326,58 @@ int main(int argc, char *argv[]) {
       if(quiet == 0) {
         fprintf(stderr, "Writing data to training file %s...", train_file);
       }
-      rv = write_training_file(train_file, &tinf);
-      if(rv != 0) { 
-        fprintf(stderr, "\nError: could not write training file!\n"); 
-        exit(12); 
+      rv = write_training_file(train_file, &ctx->tinf);
+      if(rv != 0) {
+        fprintf(stderr, "\nError: could not write training file!\n");
+        exit(12);
       }
-      else { 
-        if(quiet == 0) fprintf(stderr, "done!\n"); 
-        exit(0); 
+      else {
+        if(quiet == 0) fprintf(stderr, "done!\n");
+        prodigal_destroy(ctx);
+        exit(0);
       }
     }
 
-    /* Rewind input file */    
+    /* Rewind input file */
     if(quiet == 0) fprintf(stderr, "-------------------------------------\n");
     if(INPUT_SEEK(input_ptr, 0, SEEK_SET) == -1) {
-      fprintf(stderr, "\nError: could not rewind input file.\n"); 
+      fprintf(stderr, "\nError: could not rewind input file.\n");
       exit(13);
     }
 
-    /* Reset all the sequence/dynamic programming variables */
-    memset(seq, 0, (slen/4+1)*sizeof(unsigned char));
-    memset(rseq, 0, (slen/4+1)*sizeof(unsigned char));
-    memset(useq, 0, (slen/8+1)*sizeof(unsigned char));
-    memset(nodes, 0, nn*sizeof(struct _node));
-    nn = 0; slen = 0; ipath = 0; nmask = 0;
+    /* Reset sequence/dynamic programming variables */
+    memset(ctx->seq, 0, (ctx->slen/4+1)*sizeof(unsigned char));
+    memset(ctx->rseq, 0, (ctx->slen/4+1)*sizeof(unsigned char));
+    memset(ctx->useq, 0, (ctx->slen/8+1)*sizeof(unsigned char));
+    memset(ctx->nodes, 0, ctx->nn*sizeof(struct _node));
+    ctx->nn = 0; ctx->slen = 0; ipath = 0; ctx->nmask = 0;
   }
 
   /* Initialize the training files for a metagenomic request */
-  else if(is_meta == 1) {
+  else if(config.meta_mode == 1) {
     if(quiet == 0) {
       fprintf(stderr, "Request:  Metagenomic, Phase:  Training\n");
       fprintf(stderr, "Initializing training files...");
     }
-    initialize_metagenomic_bins(meta);
+    /* Allocate and initialize metagenomic bins */
+    ctx->meta = (struct _metagenomic_bin *)malloc(
+        NUM_META * sizeof(struct _metagenomic_bin));
+    if(ctx->meta == NULL) {
+      fprintf(stderr, "\nError: Malloc failed on metagenomic bins.\n\n");
+      exit(1);
+    }
+    for(i = 0; i < NUM_META; i++) {
+      memset(&ctx->meta[i], 0, sizeof(struct _metagenomic_bin));
+      strcpy(ctx->meta[i].desc, "None");
+      ctx->meta[i].tinf = (struct _training *)malloc(sizeof(struct _training));
+      if(ctx->meta[i].tinf == NULL) {
+        fprintf(stderr, "\nError: Malloc failed on training structure.\n\n");
+        exit(1);
+      }
+      memset(ctx->meta[i].tinf, 0, sizeof(struct _training));
+    }
+    initialize_metagenomic_bins(ctx->meta);
+    ctx->meta_initialized = 1;
     if(quiet == 0) {
       fprintf(stderr, "done!\n");
       fprintf(stderr, "-------------------------------------\n");
@@ -462,7 +386,7 @@ int main(int argc, char *argv[]) {
 
   /* Print out header for gene finding phase */
   if(quiet == 0) {
-    if(is_meta == 1) 
+    if(config.meta_mode == 1)
       fprintf(stderr, "Request:  Metagenomic, Phase:  Gene Finding\n");
     else fprintf(stderr, "Request:  Single Genome, Phase:  Gene Finding\n");
   }
@@ -470,69 +394,69 @@ int main(int argc, char *argv[]) {
   /* Read and process each sequence in the file in succession */
   sprintf(cur_header, "Prodigal_Seq_1");
   sprintf(new_header, "Prodigal_Seq_2");
-  while((slen = next_seq_multi(input_ptr, seq, useq, &num_seq, &gc, 
-         do_mask, mlist, &nmask, cur_header, new_header)) != -1) {
-    rcom_seq(seq, rseq, useq, slen);
-    if(slen == 0) {
+  while((ctx->slen = next_seq_multi(input_ptr, ctx->seq, ctx->useq, &num_seq,
+         &gc, config.mask_regions, ctx->mlist, &ctx->nmask, cur_header,
+         new_header)) != -1) {
+    rcom_seq(ctx->seq, ctx->rseq, ctx->useq, ctx->slen);
+    if(ctx->slen == 0) {
       fprintf(stderr, "\nSequence read failed (file must be Fasta, ");
       fprintf(stderr, "Genbank, or EMBL format).\n\n");
       exit(14);
     }
 
     if(quiet == 0) {
-      fprintf(stderr, "Finding genes in sequence #%d (%d bp)...", num_seq, slen);
+      fprintf(stderr, "Finding genes in sequence #%d (%d bp)...", num_seq,
+              ctx->slen);
     }
 
     /* Reallocate memory if this is the biggest sequence we've seen */
-    if(slen > max_slen && slen > STT_NOD*8) {
-      nodes = (struct _node *)realloc(nodes, (int)(slen/8)*sizeof(struct _node));
-      if(nodes == NULL) {
+    if(ctx->slen > ctx->max_slen && ctx->slen > STT_NOD*8) {
+      ctx->nodes = (struct _node *)realloc(ctx->nodes,
+                   (int)(ctx->slen/8)*sizeof(struct _node));
+      if(ctx->nodes == NULL) {
         fprintf(stderr, "Realloc failed on nodes\n\n");
         exit(11);
       }
-      max_slen = slen;
+      ctx->max_slen = ctx->slen;
     }
 
     /* Calculate short header for this sequence */
     calc_short_header(cur_header, short_header, num_seq);
 
-    if(is_meta == 0) { /* Single Genome Version */
+    if(config.meta_mode == 0) { /* Single Genome Version */
 
-      /***********************************************************************
-        Find all the potential starts and stops, sort them, and create a 
-        comprehensive list of nodes for dynamic programming.
-      ***********************************************************************/
-      nn = add_nodes(seq, rseq, slen, nodes, closed, mlist, nmask, &tinf);
-      qsort(nodes, nn, sizeof(struct _node), &compare_nodes);
+      nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                     config.closed_ends, ctx->mlist, ctx->nmask, &ctx->tinf);
+      qsort(ctx->nodes, nn, sizeof(struct _node), &compare_nodes);
 
-      /***********************************************************************
-        Second dynamic programming, using the dicodon statistics as the
-        scoring function.                                
-      ***********************************************************************/
-      score_nodes(seq, rseq, slen, nodes, nn, &tinf, closed, is_meta);
-      if(start_ptr != stdout) 
-        write_start_file(start_ptr, nodes, nn, &tinf, num_seq, slen, 0, NULL,
-                         VERSION, cur_header);
-      record_overlapping_starts(nodes, nn, &tinf, 1);
-      ipath = dprog(nodes, nn, &tinf, 1);
-      eliminate_bad_genes(nodes, ipath, &tinf);
-      ng = add_genes(genes, nodes, ipath);
-      tweak_final_starts(genes, ng, nodes, nn, &tinf);
-      record_gene_data(genes, ng, nodes, &tinf, num_seq);
+      score_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, nn, &ctx->tinf,
+                  config.closed_ends, config.meta_mode);
+      if(start_ptr != stdout)
+        write_start_file(start_ptr, ctx->nodes, nn, &ctx->tinf, num_seq,
+                         ctx->slen, 0, NULL, VERSION, cur_header);
+      record_overlapping_starts(ctx->nodes, nn, &ctx->tinf, 1);
+      ipath = dprog(ctx->nodes, nn, &ctx->tinf, 1);
+      eliminate_bad_genes(ctx->nodes, ipath, &ctx->tinf);
+      ng = add_genes(ctx->genes, ctx->nodes, ipath);
+      tweak_final_starts(ctx->genes, ng, ctx->nodes, nn, &ctx->tinf);
+      record_gene_data(ctx->genes, ng, ctx->nodes, &ctx->tinf, num_seq);
       if(quiet == 0) {
-        fprintf(stderr, "done!\n"); 
+        fprintf(stderr, "done!\n");
       }
 
       /* Output the genes */
-      print_genes(output_ptr, genes, ng, nodes, slen, output, num_seq, 0, NULL,
-                  &tinf, cur_header, short_header, VERSION);
+      print_genes(output_ptr, ctx->genes, ng, ctx->nodes, ctx->slen, output,
+                  num_seq, 0, NULL, &ctx->tinf, cur_header, short_header,
+                  VERSION);
       fflush(output_ptr);
       if(trans_ptr != stdout)
-        write_translations(trans_ptr, genes, ng, nodes, seq, rseq, useq, slen,
-                              &tinf, num_seq, short_header);
+        write_translations(trans_ptr, ctx->genes, ng, ctx->nodes, ctx->seq,
+                           ctx->rseq, ctx->useq, ctx->slen, &ctx->tinf,
+                           num_seq, short_header);
       if(nuc_ptr != stdout)
-        write_nucleotide_seqs(nuc_ptr, genes, ng, nodes, seq, rseq, useq, slen,
-                              &tinf, num_seq, short_header);
+        write_nucleotide_seqs(nuc_ptr, ctx->genes, ng, ctx->nodes, ctx->seq,
+                              ctx->rseq, ctx->useq, ctx->slen, &ctx->tinf,
+                              num_seq, short_header);
     }
 
     else { /* Metagenomic Version */
@@ -543,64 +467,73 @@ int main(int argc, char *argv[]) {
       if(high < 0.35) high = 0.35;
 
       max_score = -100.0;
-      for(i = 0; i < NUM_META; i++) { 
-        if(i == 0 || meta[i].tinf->trans_table != 
-           meta[i-1].tinf->trans_table) {
-          memset(nodes, 0, nn*sizeof(struct _node));
-          nn = add_nodes(seq, rseq, slen, nodes, closed, mlist, nmask, 
-                         meta[i].tinf);
-          qsort(nodes, nn, sizeof(struct _node), &compare_nodes);
+      for(i = 0; i < NUM_META; i++) {
+        if(i == 0 || ctx->meta[i].tinf->trans_table !=
+           ctx->meta[i-1].tinf->trans_table) {
+          memset(ctx->nodes, 0, nn*sizeof(struct _node));
+          nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                         config.closed_ends, ctx->mlist, ctx->nmask,
+                         ctx->meta[i].tinf);
+          qsort(ctx->nodes, nn, sizeof(struct _node), &compare_nodes);
         }
-        if(meta[i].tinf->gc < low || meta[i].tinf->gc > high) continue;  
-        reset_node_scores(nodes, nn);
-        score_nodes(seq, rseq, slen, nodes, nn, meta[i].tinf, closed, is_meta);
-        record_overlapping_starts(nodes, nn, meta[i].tinf, 1);
-        ipath = dprog(nodes, nn, meta[i].tinf, 1);
-        if(nodes[ipath].score > max_score) {
+        if(ctx->meta[i].tinf->gc < low || ctx->meta[i].tinf->gc > high)
+          continue;
+        reset_node_scores(ctx->nodes, nn);
+        score_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, nn,
+                    ctx->meta[i].tinf, config.closed_ends, config.meta_mode);
+        record_overlapping_starts(ctx->nodes, nn, ctx->meta[i].tinf, 1);
+        ipath = dprog(ctx->nodes, nn, ctx->meta[i].tinf, 1);
+        if(ctx->nodes[ipath].score > max_score) {
           max_phase = i;
-          max_score = nodes[ipath].score;
-          eliminate_bad_genes(nodes, ipath, meta[i].tinf);
-          ng = add_genes(genes, nodes, ipath);
-          tweak_final_starts(genes, ng, nodes, nn, meta[i].tinf);
-          record_gene_data(genes, ng, nodes, meta[i].tinf, num_seq);
+          max_score = ctx->nodes[ipath].score;
+          eliminate_bad_genes(ctx->nodes, ipath, ctx->meta[i].tinf);
+          ng = add_genes(ctx->genes, ctx->nodes, ipath);
+          tweak_final_starts(ctx->genes, ng, ctx->nodes, nn,
+                             ctx->meta[i].tinf);
+          record_gene_data(ctx->genes, ng, ctx->nodes, ctx->meta[i].tinf,
+                           num_seq);
         }
-      }    
+      }
 
       /* Recover the nodes for the best of the runs */
-      memset(nodes, 0, nn*sizeof(struct _node));
-      nn = add_nodes(seq, rseq, slen, nodes, closed, mlist, nmask,
-                       meta[max_phase].tinf);
-      qsort(nodes, nn, sizeof(struct _node), &compare_nodes);
-      score_nodes(seq, rseq, slen, nodes, nn, meta[max_phase].tinf, closed,
-                  is_meta);
-      if(start_ptr != stdout) 
-        write_start_file(start_ptr, nodes, nn, meta[max_phase].tinf, 
-                         num_seq, slen, 1, meta[max_phase].desc, VERSION,
-                         cur_header);
+      memset(ctx->nodes, 0, nn*sizeof(struct _node));
+      nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
+                     config.closed_ends, ctx->mlist, ctx->nmask,
+                     ctx->meta[max_phase].tinf);
+      qsort(ctx->nodes, nn, sizeof(struct _node), &compare_nodes);
+      score_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes, nn,
+                  ctx->meta[max_phase].tinf, config.closed_ends,
+                  config.meta_mode);
+      if(start_ptr != stdout)
+        write_start_file(start_ptr, ctx->nodes, nn, ctx->meta[max_phase].tinf,
+                         num_seq, ctx->slen, 1, ctx->meta[max_phase].desc,
+                         VERSION, cur_header);
 
       if(quiet == 0) {
-        fprintf(stderr, "done!\n"); 
+        fprintf(stderr, "done!\n");
       }
 
       /* Output the genes */
-      print_genes(output_ptr, genes, ng, nodes, slen, output, num_seq, 1,
-                  meta[max_phase].desc, meta[max_phase].tinf, cur_header, 
-                  short_header, VERSION);
+      print_genes(output_ptr, ctx->genes, ng, ctx->nodes, ctx->slen, output,
+                  num_seq, 1, ctx->meta[max_phase].desc,
+                  ctx->meta[max_phase].tinf, cur_header, short_header, VERSION);
       fflush(output_ptr);
       if(trans_ptr != stdout)
-        write_translations(trans_ptr, genes, ng, nodes, seq, rseq, useq, slen,
-                           meta[max_phase].tinf, num_seq, short_header);
+        write_translations(trans_ptr, ctx->genes, ng, ctx->nodes, ctx->seq,
+                           ctx->rseq, ctx->useq, ctx->slen,
+                           ctx->meta[max_phase].tinf, num_seq, short_header);
       if(nuc_ptr != stdout)
-        write_nucleotide_seqs(nuc_ptr, genes, ng, nodes, seq, rseq, useq, slen,
-                              meta[max_phase].tinf, num_seq, short_header);
+        write_nucleotide_seqs(nuc_ptr, ctx->genes, ng, ctx->nodes, ctx->seq,
+                              ctx->rseq, ctx->useq, ctx->slen,
+                              ctx->meta[max_phase].tinf, num_seq, short_header);
     }
 
     /* Reset all the sequence/dynamic programming variables */
-    memset(seq, 0, (slen/4+1)*sizeof(unsigned char));
-    memset(rseq, 0, (slen/4+1)*sizeof(unsigned char));
-    memset(useq, 0, (slen/8+1)*sizeof(unsigned char));
-    memset(nodes, 0, nn*sizeof(struct _node));
-    nn = 0; slen = 0; ipath = 0; nmask = 0;
+    memset(ctx->seq, 0, (ctx->slen/4+1)*sizeof(unsigned char));
+    memset(ctx->rseq, 0, (ctx->slen/4+1)*sizeof(unsigned char));
+    memset(ctx->useq, 0, (ctx->slen/8+1)*sizeof(unsigned char));
+    memset(ctx->nodes, 0, nn*sizeof(struct _node));
+    nn = 0; ctx->slen = 0; ipath = 0; ctx->nmask = 0;
     strcpy(cur_header, new_header);
     sprintf(new_header, "Prodigal_Seq_%d\n", num_seq+1);
   }
@@ -610,13 +543,8 @@ int main(int argc, char *argv[]) {
     exit(18);
   }
 
-  /* Free all memory */
-  free(seq);
-  free(rseq);
-  free(useq);
-  free(nodes);
-  free(genes);
-  for(i = 0; i < NUM_META; i++) free(meta[i].tinf);
+  /* Free all memory via library context */
+  prodigal_destroy(ctx);
 
   /* Close all the filehandles and exit */
   INPUT_CLOSE(input_ptr);
@@ -711,3 +639,5 @@ int copy_standard_input_to_file(char *path, int quiet) {
   }
   return 0;
 }
+
+#endif /* PRODIGAL_NO_MAIN */

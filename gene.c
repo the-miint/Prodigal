@@ -51,7 +51,9 @@ int add_genes(struct _gene *glist, struct _node *nod, int dbeg) {
     }
     path = nod[path].tracef;
     if(ctr == MAX_GENES) {
+#ifndef PRODIGAL_NO_MAIN
       fprintf(stderr, "warning, max # of genes exceeded, truncating...\n");
+#endif
       return ctr;
     }
   }
