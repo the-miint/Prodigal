@@ -259,6 +259,13 @@ byte-identical.
 The API (`tests/api_dump --proteins`, from model) went 1.18 → 1.10 s, then
 1.09 → 0.86 s.
 
+All of P4 after `b4f463a`, measured at `c38e4c6` on a quiet machine
+(2026-10-26, load under 1.1, medians of 5, every output and the model
+byte-identical): E. coli training 1.16 → 0.86 s, single from model 1.08 →
+0.84 s (`-a`), meta 14.08 → 12.33 s, the 2 kbp fragments in meta mode
+6.00 → 4.10 s; the API from model 1.08 → 0.84 s, and on the fragments in
+meta mode 5.55 → 3.89 s.
+
 Peak RSS (MiB) since the working arrays fit each sequence, the GC frame
 plot takes 1 B/bp (was 16) and a gene 112 B (was 1,112) (P4, 2026-10-26,
 against `b4f463a`, medians of 3 runs; output byte-identical):
