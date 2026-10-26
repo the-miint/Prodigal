@@ -25,10 +25,27 @@
    length plus MAX_LINE reaches MAX_SEQ). */
 #define MAX_BASES (MAX_SEQ - MAX_LINE - 1)
 
-/* The bases seq, rseq and useq hold: MAX_SEQ, and room for the spacer the
-   CLI adds after training input it cut at the limit (upstream wrote it past
-   its buffers). */
+/* The most bases the CLI's readers encode: MAX_SEQ, and room for the
+   spacer the CLI adds after training input it cut at the limit (upstream
+   wrote it past its buffers). */
 #define PDG_SEQ_CAP (MAX_SEQ + 16)
+
+/* The bases seq, rseq and useq hold, and the nodes and genes their arrays
+   hold, when a context is new. Each array grows as a sequence needs and
+   goes back to its floor afterwards: the bitmaps at the next sequence, the
+   nodes and genes also when prodigal_find_genes or prodigal_train returns.
+   PDG_EXACT_ARRAYS (testing: CI's sanitizers job, docs/testing.md) makes
+   the floors 1 and cuts the bitmaps to each sequence, so that ASan sees a
+   read past one. */
+#ifndef PDG_EXACT_ARRAYS
+#define PDG_SEQ_FLOOR (1 << 17)
+#define PDG_NODE_FLOOR 4096
+#define PDG_GENE_FLOOR 256
+#else
+#define PDG_SEQ_FLOOR 1
+#define PDG_NODE_FLOOR 1
+#define PDG_GENE_FLOOR 1
+#endif
 
 struct prodigal_ctx {
     prodigal_config_t config;         /* Snapshot of caller config */
@@ -42,6 +59,7 @@ struct prodigal_ctx {
     unsigned char *seq;               /* 2-bit encoded forward sequence */
     unsigned char *rseq;              /* 2-bit encoded reverse complement */
     unsigned char *useq;              /* Ambiguity bitmap (N bases) */
+    int seq_cap;                      /* Bases seq, rseq and useq hold */
     int slen;                         /* Current sequence length in bp */
     int node_cap;                     /* Nodes the nodes array holds */
     double gc;                        /* GC content of current sequence */
@@ -117,8 +135,9 @@ static inline void pdg_free(prodigal_ctx_t *ctx, void *ptr) {
     message set, unless noted.
 *******************************************************************************/
 
-/* Clear the sequence state (buffers, length, masks, GC, header and error)
-   for the next sequence. The nodes are build_nodes's (prodigal_api.c). */
+/* Clear the sequence state (bitmaps, length, masks, GC, header and error)
+   for the next sequence, and return the working arrays (bitmaps, nodes,
+   genes) to their floors: pointers into them don't survive it. */
 void pdg_clear_sequence(prodigal_ctx_t *ctx);
 
 /* Encoding a sequence into ctx (seq, useq, and with -m the masks), shared
@@ -129,13 +148,15 @@ void pdg_clear_sequence(prodigal_ctx_t *ctx);
    pdg_encode_spacer adds TTAATTAATTAA (a stop in every frame) between
    training sequences; pdg_encode_end sets slen and gc and computes the
    reverse strand. The two can fail with PRODIGAL_ERR_INVALID_INPUT past
-   limit bases, or PRODIGAL_ERR_NOMEM if the mask list can't grow; they
-   set no message. */
+   limit bases, or PRODIGAL_ERR_NOMEM if the bitmaps or the mask list
+   can't grow (short_of names which); they set no message. */
 typedef struct {
     int len;                          /* bases encoded */
     int gc;                           /* of them G or C */
     int mask_beg;                     /* -m: start of the current N run, or -1 */
     int limit;                        /* the most bases allowed */
+    const char *short_of;             /* after PRODIGAL_ERR_NOMEM: "the
+                                         sequence" or "masked regions" */
 } pdg_encoder_t;
 void pdg_encode_begin(prodigal_ctx_t *ctx, pdg_encoder_t *e, int limit);
 int pdg_encode_chars(prodigal_ctx_t *ctx, pdg_encoder_t *e, const char *s,

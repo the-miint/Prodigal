@@ -9,8 +9,8 @@
 #include <math.h>
 #include <stdint.h>
 #include "prodigal.h"
-/* White-box: the context (the node array), STT_NOD, and struct _training,
-   the model blob's layout */
+/* White-box: the context (its arrays and their floors) and struct
+   _training, the model blob's layout */
 #include "prodigal_internal.h"
 #include "tests/api_gff.h"
 #include "tests/fasta.h"
@@ -997,20 +997,37 @@ static void test_error_recovery(void) {
 
 static size_t alloc_count = 0;
 static size_t free_count = 0;
+static size_t live_bytes = 0;   /* allocated by test_alloc and not freed */
+static size_t peak_bytes = 0;   /* the most live_bytes since reset */
 
 static size_t alloc_limit = (size_t)-1;   /* test_alloc fails past this */
 
+/* test_alloc keeps each block's size in front of it, in a header that
+   keeps malloc's alignment */
+#define ALLOC_HEAD 16
+
 static void *test_alloc(size_t size, void *user_data) {
+    unsigned char *p;
     (void)user_data;
     if (alloc_count >= alloc_limit) return NULL;
     alloc_count++;
-    return malloc(size);
+    if (size > SIZE_MAX - ALLOC_HEAD ||
+        (p = (unsigned char *)malloc(ALLOC_HEAD + size)) == NULL)
+        return NULL;
+    memcpy(p, &size, sizeof(size));
+    live_bytes += size;
+    if (live_bytes > peak_bytes) peak_bytes = live_bytes;
+    return p + ALLOC_HEAD;
 }
 
 static void test_free_fn(void *ptr, void *user_data) {
+    unsigned char *p = (unsigned char *)ptr - ALLOC_HEAD;
+    size_t size;
     free_count++;
     (void)user_data;
-    free(ptr);
+    memcpy(&size, p, sizeof(size));
+    live_bytes -= size;
+    free(p);
 }
 
 /* A context on test_alloc/test_free_fn, with the counters reset and no
@@ -1022,7 +1039,7 @@ static prodigal_ctx_t *make_counted_ctx(int meta) {
     config.want_proteins = 1;
     config.alloc_fn = test_alloc;
     config.free_fn = test_free_fn;
-    alloc_count = free_count = 0;
+    alloc_count = free_count = live_bytes = peak_bytes = 0;
     alloc_limit = (size_t)-1;
     return prodigal_create(&config);
 }
@@ -1118,9 +1135,9 @@ static void test_failed_training_leaves_no_model(void) {
     ASSERT_TRUE(ctx != NULL);
     ASSERT_EQ_INT(prodigal_load_training(ctx, tdata, tlen), PRODIGAL_OK);
 
-    /* Long enough that slen/8 nodes exceed the initial STT_NOD, so
-       training's first step (reserve_nodes) allocates, and fails */
-    int32_t len = 8 * (STT_NOD + 1);
+    /* Long enough that slen/8 nodes exceed PDG_NODE_FLOOR, so training's
+       first step (reserve_nodes) allocates, and fails */
+    int32_t len = 8 * (PDG_NODE_FLOOR + 1);
     char *big = (char *)malloc(len);
     ASSERT_TRUE(big != NULL);
     memset(big, 'A', len);
@@ -1548,10 +1565,9 @@ static void test_independence_single(void) {
     Phase 15: Low-complexity input
 
     "ATG" repeated gives one start node per codon, about slen/3 nodes, past
-    the slen/8 (and at least STT_NOD) nodes the array is first sized for.
-    The array must grow, not overflow. make compare runs repeats past
-    STT_NOD (tests/make_corpus.sh); here a context's capacity is set to 0,
-    so that a 21 kbp repeat starts from slen/8 and grows.
+    the slen/8 (and at least PDG_NODE_FLOOR) nodes the array is first sized
+    for. The array must grow, not overflow; make compare runs longer
+    repeats (tests/make_corpus.sh).
 *******************************************************************************/
 
 /* fa = one record, n copies of "ATG". */
@@ -1564,9 +1580,9 @@ static void atg_repeat(fasta_t *fa, int32_t n) {
 }
 
 /* An ATG repeat, run twice on one context made from src (SINGLE: trained on
-   the repeat each time) whose node array starts at slen/8: it must grow in
-   the first run (in training, for SINGLE) and not in the second, and the
-   two must give the same genes and, trained, the same model. */
+   the repeat each time): it has more starts than the node array's floor
+   holds, so the array grows in each run (each finds it at its floor), and
+   the two must give the same genes and, trained, the same model. */
 static void low_complexity(int src) {
     fasta_t fa;
     lines_t out[2] = {{0}, {0}};
@@ -1574,11 +1590,11 @@ static void low_complexity(int src) {
     prodigal_ctx_t *ctx = NULL;
     void *blob = NULL;
     size_t len;
-    int cap[2], i, rc = PRODIGAL_OK;
-    atg_repeat(&fa, 7000);   /* 21 kbp: enough to train on */
+    const int32_t codons = 7000;   /* 21 kbp: enough to train on */
+    int i, rc = PRODIGAL_OK;
+    atg_repeat(&fa, codons);
     if (src != REF_MODEL) ctx = make_ctx(src == META);
     else if ((blob = load_ref_model(&len)) != NULL) ctx = make_model_ctx(blob, len);
-    if (ctx != NULL) ctx->node_cap = 0;   /* the first run sizes it to slen/8 */
     for (i = 0; ctx != NULL && rc == PRODIGAL_OK && i < 2; i++) {
         if (src == SINGLE && (rc = api_train(ctx, &fa)) == PRODIGAL_OK)
             model[i] = (struct _training *)memcpy(
@@ -1586,15 +1602,12 @@ static void low_complexity(int src) {
                 sizeof(struct _training));
         if (rc == PRODIGAL_OK)
             rc = api_emit_records(ctx, &fa, 0, 1, src == META, lines_emit, &out[i]);
-        cap[i] = ctx->node_cap;
     }
     if (ctx != NULL) {
         if (rc != PRODIGAL_OK)
             printf("[FAIL] %d: %s\n", rc, prodigal_last_error(ctx));
-        else if (cap[0] <= fa.lens[0] / 8 || cap[1] != cap[0])
-            printf("[FAIL] node array of %d, then %d nodes: the first run "
-                   "must grow it past %d, the second not\n", cap[0], cap[1],
-                   fa.lens[0] / 8);
+        else if (codons <= PDG_NODE_FLOOR)   /* then a run need not grow it */
+            printf("[FAIL] the repeat's starts fit the node floor\n");
         else if (src == SINGLE &&
                  memcmp(model[0], model[1], sizeof(struct _training)) != 0)
             printf("[FAIL] the models differ\n");
@@ -1623,12 +1636,12 @@ static void test_low_complexity_grow_fails(void) {
     lines_t first = {0};
     prodigal_genes_soa_t *genes = NULL;
     if (!load_anthus(&fa)) return;
-    atg_repeat(&atg, STT_NOD + 10000);
+    atg_repeat(&atg, 8 * PDG_NODE_FLOOR / 3);   /* slen/8 nodes fit the floor */
     prodigal_ctx_t *ctx = make_counted_ctx(1);
     ASSERT_TRUE(ctx != NULL);
 
     /* Bins allocated; then the ATG repeat fills the array and growing it
-       fails */
+       fails (not sizing it: its slen/8 nodes fit) */
     ASSERT_EQ_INT(api_emit_records(ctx, &fa, 0, 1, 1, lines_emit, &first), PRODIGAL_OK);
     lines_free(&first);
     ASSERT_EQ_INT(prodigal_set_sequence(ctx, atg.seqs[0], atg.lens[0], NULL),
@@ -1636,7 +1649,7 @@ static void test_low_complexity_grow_fails(void) {
     alloc_limit = alloc_count;
     ASSERT_EQ_INT(prodigal_find_genes(ctx, &genes, NULL), PRODIGAL_ERR_NOMEM);
     alloc_limit = (size_t)-1;
-    ASSERT_TRUE(strstr(prodigal_last_error(ctx), "nodes") != NULL);
+    ASSERT_TRUE(strstr(prodigal_last_error(ctx), "nodes in a") != NULL);
     ASSERT_TRUE(node_tail_zero(ctx));
 
     /* No stale node reaches the next sequence */
@@ -1668,19 +1681,22 @@ static void test_low_complexity_trained(void) {
     Phase 16: Limits
 
     Genes and masked regions past the initial arrays are kept, not dropped,
-    and the length limits are the CLI's, on encoded bases.
+    the arrays fit each sequence, and the length limits are the CLI's, on
+    encoded bases.
 *******************************************************************************/
 
-/* one = the records of fa joined into a single record. */
-static void join_records(const fasta_t *fa, fasta_t *one) {
+/* one = the records of fa joined into a single record, copies times
+   over. */
+static void join_records(const fasta_t *fa, int copies, fasta_t *one) {
     int32_t k, len = 0;
     char *s;
     for (k = 0; k < fa->n; k++) len += fa->lens[k];
-    s = (char *)xrealloc(NULL, (size_t)len + 1);
-    for (len = 0, k = 0; k < fa->n; k++) {
-        memcpy(s + len, fa->seqs[k], (size_t)fa->lens[k]);
-        len += fa->lens[k];
-    }
+    s = (char *)xrealloc(NULL, (size_t)len * copies + 1);
+    for (len = 0; copies > 0; copies--)
+        for (k = 0; k < fa->n; k++) {
+            memcpy(s + len, fa->seqs[k], (size_t)fa->lens[k]);
+            len += fa->lens[k];
+        }
     s[len] = '\0';
     fasta_one(one, "anthus_joined", s, len);
 }
@@ -1697,18 +1713,93 @@ static void test_gene_array_grows(void) {
     size_t len;
     void *blob = load_ref_model(&len);
     if (blob == NULL || !load_anthus(&fa)) return;
-    join_records(&fa, &one);
+    join_records(&fa, 1, &one);
     prodigal_ctx_t *def = make_model_ctx(blob, len), *small = make_model_ctx(blob, len);
     ASSERT_TRUE(def != NULL && small != NULL);
     small->gene_cap = 1;   /* the real array is larger */
     ASSERT_EQ_INT(api_emit_records(def, &one, 0, 1, 0, lines_emit, &want), PRODIGAL_OK);
     ASSERT_EQ_INT(api_emit_records(small, &one, 0, 1, 0, lines_emit, &got), PRODIGAL_OK);
-    ASSERT_TRUE(small->gene_cap > 1 && def->gene_cap == MAX_GENES);
+    ASSERT_TRUE(small->gene_cap > 1 && def->gene_cap == PDG_GENE_FLOOR);
     if (!lines_equal(&want, &got, "genes, grown from 1")) return;
     lines_free(&want); lines_free(&got);
     prodigal_destroy(def); prodigal_destroy(small);
     free(blob);
     fasta_free(&fa); fasta_free(&one);
+    TEST_PASS();
+}
+
+/* A new context holds little. A long sequence grows the arrays: the nodes and genes go back to their
+   floors when find_genes returns, the bitmaps (kept for another call on
+   the sequence) at the next sequence, which gets the genes it had before. */
+static void test_arrays_fit_each_sequence(void) {
+    TEST_START("working arrays: small when new, floored after a long one");
+    fasta_t fa, big;
+    lines_t first = {0}, again = {0}, scratch = {0};
+    size_t len, fresh;
+    void *blob = load_ref_model(&len);
+    if (blob == NULL || !load_anthus(&fa)) return;
+    join_records(&fa, 50, &big);   /* 1.06 Mbp, about 1,200 genes */
+    prodigal_ctx_t *ctx = make_counted_ctx(0);
+    ASSERT_TRUE(ctx != NULL);
+    fresh = live_bytes;
+    ASSERT_TRUE(fresh < ((size_t)2 << 20));
+    ASSERT_EQ_INT(prodigal_load_training(ctx, blob, len), PRODIGAL_OK);
+    ASSERT_EQ_INT(api_emit_records(ctx, &fa, 0, 1, 0, lines_emit, &first), PRODIGAL_OK);
+    ASSERT_TRUE(live_bytes == fresh);
+    peak_bytes = live_bytes;
+    ASSERT_EQ_INT(api_emit_records(ctx, &big, 0, 1, 0, lines_emit, &scratch), PRODIGAL_OK);
+    ASSERT_TRUE(peak_bytes >= fresh + (size_t)(big.lens[0] / 8) * sizeof(struct _node));
+    ASSERT_TRUE(ctx->seq_cap > PDG_SEQ_FLOOR && ctx->node_cap == PDG_NODE_FLOOR &&
+                ctx->gene_cap == PDG_GENE_FLOOR);
+    ASSERT_EQ_INT(api_emit_records(ctx, &fa, 0, 1, 0, lines_emit, &again), PRODIGAL_OK);
+    ASSERT_TRUE(live_bytes == fresh);
+    if (!lines_equal(&first, &again, "genes after a long sequence")) return;
+    lines_free(&first); lines_free(&again); lines_free(&scratch);
+    prodigal_destroy(ctx);
+    ASSERT_TRUE(live_bytes == 0);
+    free(blob);
+    fasta_free(&fa); fasta_free(&big);
+    TEST_PASS();
+}
+
+/* Encoding a sequence the bitmaps can't grow for is a clean error that
+   leaves no sequence; and when the next sequence can't have the bitmaps
+   back at their floor, they are kept, cleared, and give the genes a new
+   context gives. */
+static void test_sequence_alloc_failures(void) {
+    TEST_START("bitmaps out of memory: clean error; failed shrink kept");
+    fasta_t fa, big;
+    lines_t want = {0}, got = {0};
+    prodigal_seq_info_t info;
+    size_t len;
+    void *blob = load_ref_model(&len);
+    if (blob == NULL || !load_anthus(&fa)) return;
+    join_records(&fa, 50, &big);
+    prodigal_ctx_t *ctx = make_counted_ctx(0);
+    ASSERT_TRUE(ctx != NULL);
+    ASSERT_EQ_INT(prodigal_load_training(ctx, blob, len), PRODIGAL_OK);
+    ASSERT_EQ_INT(api_emit_records(ctx, &fa, 0, 1, 0, lines_emit, &want), PRODIGAL_OK);
+
+    alloc_limit = alloc_count;
+    ASSERT_EQ_INT(prodigal_set_sequence(ctx, big.seqs[0], big.lens[0], NULL),
+                  PRODIGAL_ERR_NOMEM);
+    ASSERT_TRUE(strstr(prodigal_last_error(ctx), "Out of memory for the sequence") != NULL);
+    ASSERT_EQ_INT(prodigal_get_seq_info(ctx, &info), PRODIGAL_OK);
+    ASSERT_EQ_INT(info.length, 0);
+    alloc_limit = (size_t)-1;
+
+    ASSERT_EQ_INT(prodigal_set_sequence(ctx, big.seqs[0], big.lens[0], NULL),
+                  PRODIGAL_OK);
+    alloc_limit = alloc_count;   /* the next sequence can't shrink them */
+    ASSERT_EQ_INT(api_emit_records(ctx, &fa, 0, 1, 0, lines_emit, &got), PRODIGAL_OK);
+    alloc_limit = (size_t)-1;
+    ASSERT_TRUE(ctx->seq_cap > PDG_SEQ_FLOOR);
+    if (!lines_equal(&want, &got, "genes on the kept bitmaps")) return;
+    lines_free(&want); lines_free(&got);
+    prodigal_destroy(ctx);
+    ASSERT_TRUE(alloc_count == free_count);
+    free(blob);
+    fasta_free(&fa); fasta_free(&big);
     TEST_PASS();
 }
 
@@ -2498,6 +2589,8 @@ int main(void) {
 
     printf("\nPhase 16: Limits\n");
     test_gene_array_grows();
+    test_arrays_fit_each_sequence();
+    test_sequence_alloc_failures();
     test_masks_past_max();
     test_length_limits();
 

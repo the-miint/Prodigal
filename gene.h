@@ -26,8 +26,6 @@
 #include "node.h"
 #include "dprog.h"
 
-#define MAX_GENES 30000
-
 struct _gene {
   int begin;               /* Left end of the gene */
   int end;                 /* Right end of the gene */

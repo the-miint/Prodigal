@@ -65,8 +65,9 @@ table 26 gene starts at GTG or TTG. For each, a training file written with
 
 `make compare`
 runs `manymasks.fa` for the mask cap (its single mode cases call genes, the
-meta ones none); no corpus contig has 30,000 genes, so the library tests
-check the gene array's growth.
+meta ones none). The gene array grows on any contig with more than
+`PDG_GENE_FLOOR` (256) genes, E. coli among them; the library tests also
+grow it from 1.
 
 **ARM64 and floating-point contraction.** ARM64 compilers fuse multiply-adds
 by default, which changes the last bits of some scores: on 2026-10-16 a
@@ -250,13 +251,27 @@ the same machine, each change against the commit before it, medians of 3–5
 runs (`hyperfine`; other users' jobs were running), every output
 byte-identical.
 
-| Change | E. coli single, trained | E. coli single, from model | E. coli meta | 2 kbp fragments, meta |
+| Change | E. coli training (`-t` writes the model) | E. coli single, from model | E. coli meta | 2 kbp fragments, meta |
 |---|---|---|---|---|
 | Proteins from a codon table (`b4f463a`) | – | 1.20 → 1.10 s (`-a`) | – | – |
 | Inline bit operations | 1.06 → 0.82 s | 1.08 → 0.83 s (`-a`) | 14.42 → 12.31 s | 6.02 → 4.06 s |
 
 The API (`tests/api_dump --proteins`, from model) went 1.18 → 1.10 s, then
 1.09 → 0.86 s.
+
+Peak RSS (MiB) since the working arrays fit each sequence (P4, 2026-10-26,
+against `b4f463a`; output byte-identical):
+
+| Input | Mode | CLI | API |
+|---|---|---|---|
+| E. coli K-12 | single, trained on input | 151 → 117 | – |
+| E. coli K-12 | single, from model | 81 → 54 | 87 → 59 |
+| E. coli K-12 | meta | 135 → 113 | – |
+| E. coli 2 kbp fragments | meta | 90 → 41 | – |
+| E. coli 2 kbp fragments | single, from model | 52 → 3.2 | – |
+
+Training's peak is mostly `calc_most_gc_frame`'s 16 B/bp (74 MB on E.
+coli); in meta mode the 50 bins take 27.9 MB.
 
 ## Sanitizers, threads, fuzzing and the stack
 
@@ -267,6 +282,7 @@ mostly training.c), and the next plain `make` rebuilds them again.
 ```bash
 SAN="-fsanitize=address,undefined -fno-sanitize-recover=all -g -O1"
 make test compare CFLAGS="$SAN"                  # ASan + UBSan
+make compare oracle CFLAGS="$SAN -DPDG_EXACT_ARRAYS"   # arrays cut to fit
 make threads CFLAGS="-fsanitize=thread -g -O1"   # TSan
 make fuzz FUZZ_TIME=600                          # libFuzzer, 10 minutes (clang)
 make stack                                       # frames over 1 MiB fail
@@ -277,6 +293,13 @@ make stack                                       # frames over 1 MiB fail
   UBSan, `make threads` under TSan, and `make fuzz` for 60 s (steps in
   `ci.yml`). Some failures show only there, e.g. the AOS strings outliving
   the SOA.
+- **Arrays cut to fit:** with the default floors and doubling, a read past
+  the end of a sequence lands in zeroed spare capacity, which ASan doesn't
+  see. `-DPDG_EXACT_ARRAYS` makes the floors 1 and cuts the bitmaps to each
+  sequence, so it does: that found `calc_orf_gc` reading 2 bases past the
+  end (`upstream-behavior.md`, "Upstream bugs"). CI's `sanitizers` job runs
+  both comparisons built so. `test_api`'s capacity and allocation-count
+  checks assume the default floors, so it is not run that way.
 - **Threads:** `tests/threads.c` (its header says what it runs). A static
   counter planted in `prodigal_find_genes` makes TSan fail it.
 - **Fuzzing:** `tests/fuzz_find_genes.c` (input format and checks in its

@@ -6,7 +6,7 @@ changing the code. Line references are to `v2.6.4-miint` at `6e96ba8`.
 ## Sequence encoding
 
 Each sequence lives in three bitmaps inside the context (`seq`, `rseq`,
-`useq`, each sized for `PDG_SEQ_CAP`, `MAX_SEQ` plus 16 bases):
+`useq`; "Limits and memory" says how they are sized):
 
 - **`seq`**: 2 bits per base. Base `i` uses bits `2i` and `2i+1`:
   `A=00`, `G=01` (bit `2i` set), `C=10` (bit `2i+1` set), `T=11`.
@@ -315,25 +315,35 @@ and a flag matrix. Still different:
 
 | Constant | Value | Where it bites |
 |---|---|---|
-| `MAX_SEQ` | 32,000,000 | Sizes `seq` and `rseq` (8 MB each) and `useq` (4 MB) at create time, with 16 bases of slack (`PDG_SEQ_CAP`). A contig, and training input, may have at most `MAX_BASES` bases ("Input limits" above). |
-| `STT_NOD` | 100,000 | Initial node capacity (17.6 MB); see "Node capacity" below. |
-| `MAX_GENES` | 30,000 | Initial `genes` array (33.4 MB; `struct _gene` is 1,112 bytes). It doubles when a contig has more genes (`keep_genes`). |
+| `MAX_SEQ` | 32,000,000 | A contig, and training input, may have at most `MAX_BASES` bases ("Input limits" above). The CLI's readers encode up to `PDG_SEQ_CAP`, 16 bases more, room for the last training spacer. |
+| `PDG_SEQ_FLOOR` | 131,072 | Bases `seq`, `rseq` and `useq` hold at create and again at each new sequence (80 KB). They double while a sequence is encoded, up to the limit. |
+| `PDG_NODE_FLOOR` | 4,096 | Nodes the node array holds at create and again after each use (704 KB); see "Node capacity" below. |
+| `PDG_GENE_FLOOR` | 256 | Genes the `genes` array holds at create and again after each use (278 KB; `struct _gene` is 1,112 bytes). It doubles when a contig has more genes (`keep_genes`). |
 | `MASK_SIZE` | 50 | Minimum N run to mask. |
 | `MAX_LINE` | 10,000 | Header length, CLI line length. |
 | `MIN_GENE` / `MIN_EDGE_GENE` | 90 / 60 | Minimum ORF length. |
 | `NUM_META` | 50 | Metagenomic bins: 50 × 558,392 B = 27.9 MB, lazily allocated on first meta `find_genes`. |
 
-- **Per context:** about 71 MB at `prodigal_create`, plus 27.9 MB in meta
-  mode, plus node growth for long contigs.
+- **Per context:** about 1.7 MB at `prodigal_create`: the context itself
+  (570 KB, most of it the model) and the arrays at their floors (1.1 MB;
+  upstream's fixed arrays took 71 MB: 32 Mbp of bitmaps, 100,000 nodes,
+  30,000 genes). Plus 27.9 MB in meta mode, plus what the sequence at hand
+  needs: 0.625–1.25 B/bp of bitmaps (they double), `slen/8` nodes (below)
+  and 1,112 B a gene. The nodes and genes go back to their floors when
+  `prodigal_find_genes` or `prodigal_train` returns, and at the next
+  sequence (`pdg_clear_sequence`, which the CLI calls); the bitmaps at the
+  next sequence. The mask list (8 B a region) is kept. The arrays are
+  zeroed with `pdg_calloc`, so with the default allocator pages are
+  committed only as they are used.
 - **Node capacity.** `build_nodes` sizes the array for `slen/8` nodes (22
-  B/bp) when that is more than `STT_NOD`. Real genomes produce about
+  B/bp) when that is more than it holds. Real genomes produce about
   0.04–0.06 nodes/bp, well under that. Low-complexity input can need up to
   about 2 nodes/bp (`add_nodes` adds at most one per pass of each strand's
   scan): a 330 kbp `ATG` repeat has 110,000. When the nodes don't fit,
   `add_nodes` returns -1 and `build_nodes` doubles the array and runs it
-  again, so such input costs memory, not correctness. The array never
-  shrinks. A long reverse ORF with many starts also costs quadratic `dprog`
-  time (`upstream-behavior.md`, quirk 10).
+  again, so such input costs memory, not correctness. A long reverse ORF
+  with many starts also costs quadratic `dprog` time
+  (`upstream-behavior.md`, quirk 10).
 
 ## Build integration
 

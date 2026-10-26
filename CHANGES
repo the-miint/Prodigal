@@ -1,5 +1,13 @@
 VERSION 2.6.5 (unreleased)
 
+* Less memory, with the same output: the working arrays fit the sequence at
+hand instead of upstream's fixed 71 MB. A new library context holds about
+1.7 MB; what a long contig needed is freed when prodigal_find_genes returns,
+and the sequence's own bitmaps at the next one. Peak memory on E. coli K-12
+from a model falls from 81 to 54 MiB, and on its 2 kbp fragments in
+metagenomic mode from 90 to 41 MiB (docs/testing.md). Running out of memory
+while reading a sequence is an error that says for what, the sequence or
+its masked regions (CLI exit 52 in training, 55 otherwise).
 * Faster, with the same output: the bit operations are inline (bitmap.h;
 bitmap.c is gone, so a build that lists the sources must drop it), and
 proteins are translated from a table of each codon's letter. Runs take
@@ -119,8 +127,8 @@ longer training input silently; both now return an error. The CLI still
 trains on the start of such input, with a warning.
 * Fixed heap corruption (a crash, in the CLI and the library) on
 low-complexity input such as a 330 kbp ATG repeat: add_nodes wrote past the
-node array, which is sized for slen/8 nodes (at least 100,000), upstream's
-budget, while such input has up to about 2 per base. The array now grows
+node array, which upstream sized for slen/8 nodes (at least 100,000), while
+such input has up to about 2 per base. The array now grows
 when the nodes don't fit. Output is unchanged on all other input. Such input
 can still be slow: see the dprog note in docs/upstream-behavior.md.
 * Fixed a crash (segmentation fault on macOS) in metagenomic mode: when a
@@ -131,8 +139,8 @@ path, which is also what that read returned on Linux, so output is unchanged
 * Library, metagenomic mode: a contig on which no bin finds a gene path now
 reports the same bin as the CLI (the first whose GC window contains the
 contig) instead of bin 0.
-* Library: prodigal_find_genes no longer clears its 30 MB gene array on
-every call (the CLI never did, and every field read is written first). Output
+* Library: prodigal_find_genes no longer clears its gene array (then 30 MB)
+on every call (the CLI never did, and every field read is written first). Output
 is unchanged; metagenomic mode runs about twice as fast.
 * Builds with -ffp-contract=off, so ARM64 computes exactly what x86-64 does.
 Without it a default ARM64 build fused multiply-adds and printed some start

@@ -118,6 +118,15 @@ oracle. Change one only by explicit decision: record it here and in
     an ambiguous base is never a stop or a start, and translates as X, in
     the CLI's `-a` output and the library's proteins alike. Upstream's
     table 22, where TCA is a stop, ended a gene at TNA; it is rejected.
+14. **A reverse-strand gene's `gc_cont` is counted 2 bases off.** For a
+    `-` gene, `calc_orf_gc` (`node.c`) counts its stop codon, then the
+    bases from 3 past the stop codon to 2 past the start codon: the gene's
+    own bases with the 2 after the stop codon swapped for the 2 upstream of
+    the start. It divides by the gene's length. It changes only that
+    reported value (the GFF's `gc_cont` and the `-s` file's last column).
+    For a `-` gene that starts at the right edge of the contig, those 2
+    upstream bases are past the end of the sequence: see "Upstream bugs"
+    below.
 
 ## Upstream bugs present in the CLI too (fix, but preserve output)
 
@@ -148,14 +157,24 @@ defect.
   then added the trailing 12-base spacer past the end of its 2-bit buffers,
   up to 3 bytes, and `rcom_seq` read and wrote as far (ASan:
   heap-buffer-overflow in `read_seq_training`, checked on 2026-10-18 with a
-  13,185-base record and a 32 Mbp unwrapped one). The buffers now have 16
-  bases of slack (`PDG_SEQ_CAP`), so the model is what upstream computed
-  when the bytes past its buffers happened to be free.
+  13,185-base record and a 32 Mbp unwrapped one). The CLI's readers may now
+  encode 16 bases past `MAX_SEQ` (`PDG_SEQ_CAP`), and the arrays grow to
+  hold them, so the model is what upstream computed when the bytes past
+  its buffers happened to be free.
+- **`calc_orf_gc` read past the sequence (fixed in 2.6.5).** For a `-`
+  gene that starts at the right edge of the contig, quirk 14's window ends
+  2 bases past the end of the sequence. Upstream read them from its
+  oversized, zeroed buffers, as A; the fork's arrays fit each sequence, so
+  `calc_orf_gc` now counts them as A without reading them. Found on
+  2026-10-24 under ASan with the arrays cut to their contents (testing.md,
+  "Arrays cut to fit"); where those bytes were not zero, a 2 kbp
+  fragment's edge gene reported `gc_cont=0.540`, where upstream reports
+  0.538.
 - **Unbounded `add_nodes` (fixed in 2.6.5).** `add_nodes` (`node.c`) wrote
   past the node array on low-complexity input with more nodes than the
-  `slen/8` (at least `STT_NOD`) it is sized for, e.g. `"ATG" × 110000`: heap
-  corruption. The array now grows (`internals.md`, "Limits and memory"), so
-  output is unchanged wherever upstream didn't overflow.
+  `slen/8` (at least 100,000) upstream sized it for, e.g. `"ATG" ×
+  110000`: heap corruption. The array now grows (`internals.md`, "Limits
+  and memory"), so output is unchanged wherever upstream didn't overflow.
 - **Unchecked allocations (fixed in 2.6.5).** `calc_mer_bg` did not check
   its `malloc`; it now counts in its output array and allocates nothing.
   `calc_most_gc_frame` leaked on a partial allocation failure; it now makes

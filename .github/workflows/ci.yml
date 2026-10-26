@@ -119,6 +119,13 @@ jobs:
           make prodigal CC=clang CFLAGS="$SAN_CFLAGS"
           tests/oracle_diff.sh
 
+      # The arrays cut to their contents, so that ASan sees a read past the
+      # end of a sequence (docs/testing.md)
+      - name: Both comparisons, arrays cut to their contents
+        run: |
+          make compare CC=clang CFLAGS="$SAN_CFLAGS -DPDG_EXACT_ARRAYS"
+          tests/oracle_diff.sh
+
       # TSan's runtime can't map its shadow memory with the runner's 32 bits
       # of mmap randomization
       - name: Contexts on four threads under ThreadSanitizer

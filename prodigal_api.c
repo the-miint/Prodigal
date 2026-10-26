@@ -80,6 +80,78 @@ int prodigal_config_init_v(prodigal_config_t *config, int abi_version,
 }
 
 /*******************************************************************************
+    Working arrays
+
+    seq, rseq and useq, the nodes and the genes: when they grow and go back
+    to their floors is in prodigal_internal.h (PDG_SEQ_FLOOR).
+*******************************************************************************/
+
+/* A zeroed array of n elements of size bytes, holding the first keep of
+   old's elements, in place of old (freed). NULL if out of memory, and old
+   is kept. */
+static void *resize(prodigal_ctx_t *ctx, void *old, size_t n, size_t size,
+                    size_t keep) {
+    void *p = n > SIZE_MAX / size ? NULL : pdg_calloc(ctx, n * size);
+    if (p == NULL) return NULL;
+    if (keep > 0) memcpy(p, old, keep * size);
+    pdg_free(ctx, old);
+    return p;
+}
+
+/* Bytes of seq or rseq (2 bits a base), and of useq (1 bit), for n bases */
+#define SEQ_BYTES(n) (((size_t)(n) + 3) / 4)
+#define USEQ_BYTES(n) (((size_t)(n) + 7) / 8)
+
+/* seq, rseq and useq for cap (> 0) bases, zeroed but for the first keep
+   bases of seq and useq (rseq is built from them). Returns 0, or -1 if out
+   of memory, and the arrays are kept. */
+static int resize_seq(prodigal_ctx_t *ctx, int cap, int keep) {
+    unsigned char *seq = (unsigned char *)pdg_calloc(ctx, SEQ_BYTES(cap));
+    unsigned char *rseq = (unsigned char *)pdg_calloc(ctx, SEQ_BYTES(cap));
+    unsigned char *useq = (unsigned char *)pdg_calloc(ctx, USEQ_BYTES(cap));
+    if (seq == NULL || rseq == NULL || useq == NULL) {
+        pdg_free(ctx, seq);
+        pdg_free(ctx, rseq);
+        pdg_free(ctx, useq);
+        return -1;
+    }
+    if (keep > 0) {
+        memcpy(seq, ctx->seq, SEQ_BYTES(keep));
+        memcpy(useq, ctx->useq, USEQ_BYTES(keep));
+    }
+    pdg_free(ctx, ctx->seq);
+    pdg_free(ctx, ctx->rseq);
+    pdg_free(ctx, ctx->useq);
+    ctx->seq = seq;
+    ctx->rseq = rseq;
+    ctx->useq = useq;
+    ctx->seq_cap = cap;
+    return 0;
+}
+
+/* The node array for cap (> 0) nodes, zeroed (its nodes dropped). Returns
+   0, or -1 if out of memory, and the array is kept. */
+static int resize_nodes(prodigal_ctx_t *ctx, int cap) {
+    struct _node *nodes = (struct _node *)resize(ctx, ctx->nodes, (size_t)cap,
+                                                 sizeof(struct _node), 0);
+    if (nodes == NULL) return -1;
+    ctx->nodes = nodes;
+    ctx->node_cap = cap;
+    ctx->nn = 0;
+    return 0;
+}
+
+/* The gene array for cap (> 0) genes, zeroed; as resize_nodes. */
+static int resize_genes(prodigal_ctx_t *ctx, int cap) {
+    struct _gene *genes = (struct _gene *)resize(ctx, ctx->genes, (size_t)cap,
+                                                 sizeof(struct _gene), 0);
+    if (genes == NULL) return -1;
+    ctx->genes = genes;
+    ctx->gene_cap = cap;
+    return 0;
+}
+
+/*******************************************************************************
     Context lifecycle
 *******************************************************************************/
 
@@ -151,30 +223,13 @@ prodigal_ctx_t *prodigal_create(const prodigal_config_t *config) {
     ctx->config = *config;
     reset_model(ctx);
 
-    /* Allocate sequence buffers */
-    ctx->seq = (unsigned char *)pdg_alloc(ctx, PDG_SEQ_CAP / 4 * sizeof(unsigned char));
-    ctx->rseq = (unsigned char *)pdg_alloc(ctx, PDG_SEQ_CAP / 4 * sizeof(unsigned char));
-    ctx->useq = (unsigned char *)pdg_alloc(ctx, PDG_SEQ_CAP / 8 * sizeof(unsigned char));
-    if (ctx->seq == NULL || ctx->rseq == NULL || ctx->useq == NULL) {
+    /* The working arrays, at their floors */
+    if (resize_seq(ctx, PDG_SEQ_FLOOR, 0) != 0 ||
+        resize_nodes(ctx, PDG_NODE_FLOOR) != 0 ||
+        resize_genes(ctx, PDG_GENE_FLOOR) != 0) {
         prodigal_destroy(ctx);
         return NULL;
     }
-    memset(ctx->seq, 0, PDG_SEQ_CAP / 4 * sizeof(unsigned char));
-    memset(ctx->rseq, 0, PDG_SEQ_CAP / 4 * sizeof(unsigned char));
-    memset(ctx->useq, 0, PDG_SEQ_CAP / 8 * sizeof(unsigned char));
-
-    /* Allocate node and gene arrays */
-    ctx->nodes = (struct _node *)pdg_alloc(ctx, STT_NOD * sizeof(struct _node));
-    ctx->node_cap = STT_NOD;
-    ctx->genes = (struct _gene *)pdg_alloc(ctx, MAX_GENES * sizeof(struct _gene));
-    ctx->gene_cap = MAX_GENES;
-    if (ctx->nodes == NULL || ctx->genes == NULL) {
-        prodigal_destroy(ctx);
-        return NULL;
-    }
-    memset(ctx->nodes, 0, STT_NOD * sizeof(struct _node));
-    memset(ctx->genes, 0, MAX_GENES * sizeof(struct _gene));
-
     return ctx;
 }
 
@@ -191,22 +246,6 @@ void prodigal_destroy(prodigal_ctx_t *ctx) {
     free_meta(ctx);
 
     free(ctx);  /* Context itself always uses system malloc */
-}
-
-/*******************************************************************************
-    Working arrays
-*******************************************************************************/
-
-/* A zeroed array of n elements of size bytes, holding the first keep of
-   old's elements, in place of old (freed). NULL if out of memory, and old
-   is kept. */
-static void *grow(prodigal_ctx_t *ctx, void *old, size_t n, size_t size,
-                  size_t keep) {
-    void *p = n > SIZE_MAX / size ? NULL : pdg_calloc(ctx, n * size);
-    if (p == NULL) return NULL;
-    if (keep > 0) memcpy(p, old, keep * size);
-    pdg_free(ctx, old);
-    return p;
 }
 
 /*******************************************************************************
@@ -232,9 +271,9 @@ static int track_mask(prodigal_ctx_t *ctx, int *mask_beg, int pos, char ch) {
     if (*mask_beg != -1 && !is_n) {
         if (pos - *mask_beg >= MASK_SIZE) {
             if (ctx->nmask == ctx->mask_cap) {
-                m = (mask *)grow(ctx, ctx->masks,
-                                 ctx->mask_cap > 0 ? 2 * (size_t)ctx->mask_cap : 64,
-                                 sizeof(mask), (size_t)ctx->nmask);
+                m = (mask *)resize(ctx, ctx->masks,
+                                   ctx->mask_cap > 0 ? 2 * (size_t)ctx->mask_cap : 64,
+                                   sizeof(mask), (size_t)ctx->nmask);
                 if (m == NULL) return -1;
                 ctx->masks = m;
                 ctx->mask_cap = ctx->mask_cap > 0 ? 2 * ctx->mask_cap : 64;
@@ -249,10 +288,22 @@ static int track_mask(prodigal_ctx_t *ctx, int *mask_beg, int pos, char ch) {
     return 0;
 }
 
+/* The node and gene arrays back to their floors, if they grew (kept, if the
+   memory for those can't be had) */
+static void floor_nodes_genes(prodigal_ctx_t *ctx) {
+    if (ctx->node_cap > PDG_NODE_FLOOR) resize_nodes(ctx, PDG_NODE_FLOOR);
+    if (ctx->gene_cap > PDG_GENE_FLOOR) resize_genes(ctx, PDG_GENE_FLOOR);
+}
+
 void pdg_clear_sequence(prodigal_ctx_t *ctx) {
-    memset(ctx->seq, 0, (ctx->slen / 4 + 1) * sizeof(unsigned char));
-    memset(ctx->rseq, 0, (ctx->slen / 4 + 1) * sizeof(unsigned char));
-    memset(ctx->useq, 0, (ctx->slen / 8 + 1) * sizeof(unsigned char));
+    /* Bitmaps a longer sequence grew go back to their floor (or, if the
+       memory for that can't be had, are kept and cleared) */
+    if (ctx->seq_cap <= PDG_SEQ_FLOOR || resize_seq(ctx, PDG_SEQ_FLOOR, 0) != 0) {
+        memset(ctx->seq, 0, SEQ_BYTES(ctx->slen));
+        memset(ctx->rseq, 0, SEQ_BYTES(ctx->slen));
+        memset(ctx->useq, 0, USEQ_BYTES(ctx->slen));
+    }
+    floor_nodes_genes(ctx);
     ctx->slen = 0;
     ctx->nmask = 0;
     ctx->gc = 0.0;
@@ -267,6 +318,19 @@ void pdg_encode_begin(prodigal_ctx_t *ctx, pdg_encoder_t *e, int limit) {
     e->gc = 0;
     e->mask_beg = -1;
     e->limit = limit;
+    e->short_of = NULL;
+}
+
+/* Room in seq and useq for n bases past e->len (within the limit): they
+   double, up to the limit. PRODIGAL_OK, or PRODIGAL_ERR_NOMEM. */
+static int room_for(prodigal_ctx_t *ctx, pdg_encoder_t *e, int n) {
+    int cap = 2 * ctx->seq_cap;   /* at most 2 * PDG_SEQ_CAP: no overflow */
+    if (e->len + n <= ctx->seq_cap) return PRODIGAL_OK;
+    if (cap < e->len + n) cap = e->len + n;
+    if (cap > e->limit) cap = e->limit;
+    if (resize_seq(ctx, cap, e->len) == 0) return PRODIGAL_OK;
+    e->short_of = "the sequence";
+    return PRODIGAL_ERR_NOMEM;
 }
 
 int pdg_encode_chars(prodigal_ctx_t *ctx, pdg_encoder_t *e, const char *s,
@@ -275,9 +339,12 @@ int pdg_encode_chars(prodigal_ctx_t *ctx, pdg_encoder_t *e, const char *s,
     for (i = 0; i < n; i++) {
         if (s[i] < 'A' || s[i] > 'z') continue;
         if (e->len >= e->limit) return PRODIGAL_ERR_INVALID_INPUT;
+        if (room_for(ctx, e, 1) != PRODIGAL_OK) return PRODIGAL_ERR_NOMEM;
         if (ctx->config.mask_regions &&
-            track_mask(ctx, &e->mask_beg, e->len, s[i]) != 0)
+            track_mask(ctx, &e->mask_beg, e->len, s[i]) != 0) {
+            e->short_of = "masked regions";
             return PRODIGAL_ERR_NOMEM;
+        }
         e->gc += encode_base(ctx->seq, ctx->useq, e->len++, s[i]);
     }
     return PRODIGAL_OK;
@@ -286,12 +353,16 @@ int pdg_encode_chars(prodigal_ctx_t *ctx, pdg_encoder_t *e, const char *s,
 int pdg_encode_spacer(prodigal_ctx_t *ctx, pdg_encoder_t *e) {
     int i;
     if (e->len + 12 > e->limit) return PRODIGAL_ERR_INVALID_INPUT;
+    if (room_for(ctx, e, 12) != PRODIGAL_OK) return PRODIGAL_ERR_NOMEM;
     for (i = 0; i < 12; i++, e->len++)
         if (i % 4 < 2) encode_base(ctx->seq, ctx->useq, e->len, 'T');
     return PRODIGAL_OK;
 }
 
 void pdg_encode_end(prodigal_ctx_t *ctx, pdg_encoder_t *e) {
+#ifdef PDG_EXACT_ARRAYS
+    (void)resize_seq(ctx, e->len > 0 ? e->len : 1, e->len);   /* or kept */
+#endif
     ctx->slen = e->len;
     ctx->gc = e->len > 0 ? (double)e->gc / (double)e->len : 0.0;
     rcom_seq(ctx->seq, ctx->rseq, ctx->useq, e->len);
@@ -319,7 +390,7 @@ static int encode_seqs(prodigal_ctx_t *ctx, const char *const *seqs,
         ctx->slen = e.len;   /* clear what was encoded */
         pdg_clear_sequence(ctx);
         if (rc == PRODIGAL_ERR_NOMEM)
-            PDG_SET_ERROR(ctx, rc, "Out of memory for masked regions");
+            PDG_SET_ERROR(ctx, rc, "Out of memory for %s", e.short_of);
         else if (rc != PRODIGAL_OK)
             PDG_SET_ERROR(ctx, rc, "Sequence too long (at most %d bases, not "
                           "counting characters outside A-z)", MAX_BASES);
@@ -375,15 +446,7 @@ int prodigal_get_seq_info(const prodigal_ctx_t *ctx, prodigal_seq_info_t *info) 
    one, whose contents are dropped. Returns 0, or -1 if out of memory (the
    caller sets the error). */
 static int reserve_nodes(prodigal_ctx_t *ctx, int cap) {
-    struct _node *nodes;
-    if (cap <= ctx->node_cap) return 0;
-    nodes = (struct _node *)grow(ctx, ctx->nodes, (size_t)cap,
-                                 sizeof(struct _node), 0);
-    if (nodes == NULL) return -1;
-    ctx->nodes = nodes;
-    ctx->nn = 0;
-    ctx->node_cap = cap;
-    return 0;
+    return cap <= ctx->node_cap ? 0 : resize_nodes(ctx, cap);
 }
 
 /* The sorted nodes of the current sequence under model tinf, in ctx->nodes.
@@ -405,7 +468,7 @@ static int build_nodes(prodigal_ctx_t *ctx, struct _training *tinf) {
     while ((nn = add_nodes(ctx->seq, ctx->rseq, ctx->slen, ctx->nodes,
                            ctx->node_cap, ctx->config.closed_ends,
                            ctx->masks, ctx->nmask, tinf)) < 0) {
-        if (reserve_nodes(ctx, 2 * ctx->node_cap) != 0) {
+        if (resize_nodes(ctx, 2 * ctx->node_cap) != 0) {
             /* add_nodes filled the array: clear it for the next call */
             memset(ctx->nodes, 0, (size_t)ctx->node_cap * sizeof(struct _node));
             ctx->nn = 0;
@@ -526,9 +589,12 @@ static void log_training(const prodigal_ctx_t *ctx, int stage, int done) {
 }
 
 int prodigal_train(prodigal_ctx_t *ctx) {
+    int rc;
     if (ctx != NULL && ctx->config.meta_mode)
         return refuse_in_meta(ctx, "training");
-    return pdg_train(ctx, log_training);
+    rc = pdg_train(ctx, log_training);
+    if (ctx != NULL) floor_nodes_genes(ctx);   /* scratch once it returns */
+    return rc;
 }
 
 /* Also prodigal_load_training's check. Only the fields training sets from
@@ -674,21 +740,16 @@ int pdg_score_nodes(prodigal_ctx_t *ctx, struct _training *tinf) {
    ctx->genes with their attributes under model tinf; returns how many. */
 static int keep_genes(prodigal_ctx_t *ctx, int ipath, struct _training *tinf,
                       int seqnum) {
-    struct _gene *genes;
     int ng;
     eliminate_bad_genes(ctx->nodes, ipath, tinf);
-    /* When the genes don't fit (upstream truncated at MAX_GENES), the array
+    /* When the genes don't fit (upstream truncated at 30,000), the array
        doubles and add_genes runs again */
     while ((ng = add_genes(ctx->genes, ctx->gene_cap, ctx->nodes, ipath)) < 0) {
-        genes = (struct _gene *)grow(ctx, ctx->genes, 2 * (size_t)ctx->gene_cap,
-                                     sizeof(struct _gene), 0);
-        if (genes == NULL) {
+        if (resize_genes(ctx, 2 * ctx->gene_cap) != 0) {
             PDG_SET_ERROR(ctx, PRODIGAL_ERR_NOMEM,
                           "Out of memory for more than %d genes", ctx->gene_cap);
             return PRODIGAL_ERR_NOMEM;
         }
-        ctx->genes = genes;
-        ctx->gene_cap *= 2;
     }
     tweak_final_starts(ctx->genes, ng, ctx->nodes, ctx->nn, tinf);
     record_gene_data(ctx->genes, ng, ctx->nodes, tinf, seqnum);
@@ -949,8 +1010,8 @@ static void fill_stats(const prodigal_ctx_t *ctx, int ng, int nn, int bin,
                  "%s", ctx->meta[bin].desc);
 }
 
-int prodigal_find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
-                        prodigal_stats_t *stats_out) {
+static int find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
+                      prodigal_stats_t *stats_out) {
     struct _training *tinf;
     int rc, ng, nn, bin = -1;
 
@@ -987,6 +1048,15 @@ int prodigal_find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
     if (rc != PRODIGAL_OK) return rc;
     fill_stats(ctx, ng, nn, bin, tinf, stats_out);
     return PRODIGAL_OK;
+}
+
+/* The nodes and genes are scratch once it returns (the bitmaps stay, for
+   another call on the same sequence) */
+int prodigal_find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
+                        prodigal_stats_t *stats_out) {
+    int rc = find_genes(ctx, genes_out, stats_out);
+    if (ctx != NULL) floor_nodes_genes(ctx);
+    return rc;
 }
 
 int prodigal_find_genes_aos(prodigal_ctx_t *ctx, prodigal_genes_t **genes_out,

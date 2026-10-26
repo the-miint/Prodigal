@@ -177,11 +177,11 @@ END {
 }' anthus_aco.fas >"$out/big.fa"
 
 # One start per codon gives about slen/3 nodes, past the slen/8 (at least
-# STT_NOD) the node array is first sized for. The CAT record, first so that
-# it is the one that grows the array in meta mode, puts the starts on the
-# reverse strand. It is cut into 300-codon ORFs on purpose: a single long
-# reverse ORF with that many starts would take dprog quadratic time
-# (docs/upstream-behavior.md, quirk 10). The ATG repeat is one forward ORF.
+# PDG_NODE_FLOOR) the node array is sized for at each record. The CAT
+# record puts the starts on the reverse strand. It is cut into 300-codon
+# ORFs on purpose: a single long reverse ORF with that many starts would
+# take dprog quadratic time (docs/upstream-behavior.md, quirk 10). The ATG
+# repeat is one forward ORF.
 awk '
 function lines(hdr, line, n,   i) {
   print ">" hdr

@@ -523,8 +523,12 @@ PRODIGAL_API int prodigal_config_init_v(prodigal_config_t *config,
 /**
  * Create a new Prodigal context.
  *
- * Allocates all internal buffers.  The config is snapshotted; the caller may
- * modify or discard it after this call.
+ * The context starts small (about 1.7 MB: its model, and its working
+ * arrays at their floors).  The arrays grow as each sequence needs (in
+ * prodigal_set_sequence, prodigal_set_training_sequences, prodigal_train
+ * and prodigal_find_genes, any of which can then return
+ * PRODIGAL_ERR_NOMEM) and go back to their floors afterwards.  The config
+ * is snapshotted; the caller may modify or discard it after this call.
  *
  * Returns NULL on failure: a config prodigal_config_validate() rejects, or
  * out of memory.  No context exists then to carry an error message; call
@@ -579,6 +583,9 @@ PRODIGAL_API void prodigal_destroy(prodigal_ctx_t *ctx);
  *
  * At most 31,989,999 characters may be kept (MAX_SEQ - MAX_LINE - 1), the
  * CLI's limit; a longer sequence is an error (PRODIGAL_ERR_INVALID_INPUT).
+ * PRODIGAL_ERR_NOMEM: no memory for the sequence (0.625 B a base, growing
+ * by doubling) or, with mask_regions, its masked regions.  On an error no
+ * sequence is loaded.
  *
  * Resets internal state from any previous sequence.  The context can be
  * reused across multiple set_sequence + find_genes cycles.
@@ -601,7 +608,8 @@ PRODIGAL_API int prodigal_set_sequence(prodigal_ctx_t *ctx,
  * After this call, use prodigal_train() to build the model.  Characters are
  * kept or dropped as in prodigal_set_sequence(), and the same limit applies
  * to the whole, spacers included: a longer input is an error, where the
- * CLI warns and trains on the start of it.
+ * CLI warns and trains on the start of it.  PRODIGAL_ERR_NOMEM as in
+ * prodigal_set_sequence().
  *
  * @param ctx      Context.
  * @param seqs     Array of n_seqs raw nucleotide strings.

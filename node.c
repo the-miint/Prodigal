@@ -560,8 +560,13 @@ void calc_orf_gc(unsigned char *seq, unsigned char *rseq, int slen, struct
                is_gc(seq, nod[i].ndx-2);
     }
     else if(nod[i].strand == -1) {
+      /* j+1 and j+2 reach 2 bases past the start, past the end of the
+         sequence for a gene that starts at its right edge, where upstream
+         read A from its zeroed buffers (the fork's bound; quirk 14 in
+         docs/upstream-behavior.md) */
       for(j = last[fr]+3; j <= nod[i].ndx; j+=3)
-        gc[fr] += is_gc(seq, j) + is_gc(seq, j+1) + is_gc(seq, j+2);
+        gc[fr] += is_gc(seq, j) + (j+1 < slen ? is_gc(seq, j+1) : 0) +
+                  (j+2 < slen ? is_gc(seq, j+2) : 0);
       gsize = (float)(abs(nod[i].stop_val-nod[i].ndx)+3.0);
       nod[i].gc_cont = gc[fr]/gsize;
       last[fr] = nod[i].ndx;

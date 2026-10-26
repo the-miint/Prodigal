@@ -21,12 +21,14 @@
 #include "sequence.h"
 #include "prodigal_internal.h"
 
-/* The readers' buffers hold every base they can read, so encoding fails only
-   for want of memory for masks: stop as upstream did when it ran out of
-   room for them. */
-static void encoded_or_exit(int rc, int code) {
+/* Encoding fails for want of memory, for the sequence or its masks: stop as
+   upstream did when it ran out of room for masks. (The readers stop at the
+   limit themselves, so a sequence too long is unreachable here.) */
+static void encoded_or_exit(int rc, const pdg_encoder_t *e, int code) {
   if(rc == PRODIGAL_OK) return;
-  fprintf(stderr, "Error: out of memory for regions of 'N''s.\n");
+  if(rc == PRODIGAL_ERR_NOMEM)
+    fprintf(stderr, "Error: out of memory for %s.\n", e->short_of);
+  else fprintf(stderr, "Error: sequence longer than %d bases.\n", e->limit);
   exit(code);
 }
 
@@ -57,7 +59,7 @@ int read_seq_training(fptr fp, prodigal_ctx_t *ctx) {
     if(line[0] == '>' || (line[0] == 'S' && line[1] == 'Q') ||
        (strlen(line) > 6 && strncmp(line, "ORIGIN", 6) == 0)) {
       hdr = 1;
-      if(fhdr > 0) encoded_or_exit(pdg_encode_spacer(ctx, &enc), 52);
+      if(fhdr > 0) encoded_or_exit(pdg_encode_spacer(ctx, &enc), &enc, 52);
       fhdr++;
     }
     else if(hdr == 1 && (line[0] == '/' && line[1] == '/')) hdr = 0;
@@ -72,7 +74,8 @@ int read_seq_training(fptr fp, prodigal_ctx_t *ctx) {
         for(i = 0; i < gapsize; i++) line[i] = 'n';
         line[i] = '\0';
       }
-      encoded_or_exit(pdg_encode_chars(ctx, &enc, line, strlen(line)), 52);
+      encoded_or_exit(pdg_encode_chars(ctx, &enc, line, strlen(line)), &enc,
+                      52);
     }
     if(enc.len+MAX_LINE >= MAX_SEQ) {
       fprintf(stderr, "\n\nWarning:  Sequence is long (max %d for training).\n",
@@ -81,7 +84,7 @@ int read_seq_training(fptr fp, prodigal_ctx_t *ctx) {
       break;
     }
   }
-  if(fhdr > 1) encoded_or_exit(pdg_encode_spacer(ctx, &enc), 52);
+  if(fhdr > 1) encoded_or_exit(pdg_encode_spacer(ctx, &enc), &enc, 52);
   pdg_encode_end(ctx, &enc);
   return enc.len;
 }
@@ -162,7 +165,8 @@ int next_seq_multi(fptr fp, prodigal_ctx_t *ctx, int *sctr, char *cur_hdr,
         for(i = 0; i < gapsize; i++) line[i] = 'n';
         line[i] = '\0';
       }
-      encoded_or_exit(pdg_encode_chars(ctx, &enc, line, strlen(line)), 55);
+      encoded_or_exit(pdg_encode_chars(ctx, &enc, line, strlen(line)), &enc,
+                      55);
     }
     if(enc.len+MAX_LINE >= MAX_SEQ) {
       fprintf(stderr, "Sequence too long (max %d permitted).\n", MAX_SEQ);
