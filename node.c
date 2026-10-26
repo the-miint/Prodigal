@@ -268,8 +268,8 @@ void record_overlapping_starts(struct _node *nod, int nn, struct _training
   for this particular organism.
 *******************************************************************************/
 
-void record_gc_bias(int *gc, struct _node *nod, int nn, struct _training
-                    *tinf) {
+void record_gc_bias(signed char *gc, struct _node *nod, int nn,
+                    struct _training *tinf) {
   int i, j, ctr[3][3], last[3], frmod, fr, mfr, len;
   double tot = 0.0;
 

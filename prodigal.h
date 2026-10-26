@@ -523,7 +523,7 @@ PRODIGAL_API int prodigal_config_init_v(prodigal_config_t *config,
 /**
  * Create a new Prodigal context.
  *
- * The context starts small (about 1.7 MB: its model, and its working
+ * The context starts small (about 1.4 MB: its model, and its working
  * arrays at their floors).  The arrays grow as each sequence needs (in
  * prodigal_set_sequence, prodigal_set_training_sequences, prodigal_train
  * and prodigal_find_genes, any of which can then return

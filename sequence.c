@@ -590,34 +590,33 @@ int max_fr(int n1, int n2, int n3) {
   position in the sequence.
 *******************************************************************************/
 
-int *calc_most_gc_frame(prodigal_ctx_t *ctx, unsigned char *seq, int slen) {
-  int i, j, *fwd, *bwd, *tot;
-  int win, *gp;
+signed char *calc_most_gc_frame(prodigal_ctx_t *ctx, unsigned char *seq,
+                                int slen) {
+  int i, j, k, tot[3];
+  signed char *gp;
 
-  /* One block through the context's allocator: gp, which the caller frees
-     with pdg_free, then the working arrays.  NULL if out of memory. */
-  gp = (int *)pdg_alloc(ctx, 4*(size_t)slen*sizeof(int));
+  /* The GC in each frame within WINDOW/2 of a base (both ends excluded,
+     cut at the ends of the sequence), which upstream took from four arrays
+     of slen ints, kept as one running sum per frame that moves a codon at
+     a time.  Allocates only gp; NULL if out of memory; the caller frees gp
+     with pdg_free. */
+#if WINDOW / 2 % 3 != 0
+#error "calc_most_gc_frame: WINDOW/2 must be a whole number of codons"
+#endif
+  gp = (signed char *)pdg_alloc(ctx, (size_t)slen);
   if(gp == NULL) return NULL;
-  fwd = gp + slen; bwd = fwd + slen; tot = bwd + slen;
-  for(i = 0; i < slen; i++) { fwd[i] = 0; bwd[i] = 0; tot[i] = 0; gp[i] = -1; }
-
-  for(i = 0; i < 3; i++) {
-    for(j = 0 + i; j < slen; j++) {
-      if(j < 3) fwd[j] = is_gc(seq, j);
-      else fwd[j] = fwd[j-3] + is_gc(seq, j);
-      if(j < 3) bwd[slen-j-1] = is_gc(seq, slen-j-1);
-      else bwd[slen-j-1] = bwd[slen-j+2] + is_gc(seq, slen-j-1);
+  for(j = 0; j < 3; j++)
+    for(tot[j] = 0, k = j; k < slen && k < j + WINDOW/2; k += 3)
+      tot[j] += is_gc(seq, k);
+  for(i = 0; i < slen-2; i+=3) {
+    gp[i] = gp[i+1] = gp[i+2] = (signed char)max_fr(tot[0], tot[1], tot[2]);
+    for(j = 0; j < 3; j++) {
+      k = i+j;
+      if(k + WINDOW/2 < slen) tot[j] += is_gc(seq, k + WINDOW/2);
+      if(k + 3 - WINDOW/2 >= 0) tot[j] -= is_gc(seq, k + 3 - WINDOW/2);
     }
   }
-  for(i = 0; i < slen; i++) {
-    tot[i] = fwd[i] + bwd[i] - is_gc(seq, i);
-    if(i - WINDOW/2 >= 0) tot[i] -= fwd[i-WINDOW/2];
-    if(i + WINDOW/2 < slen) tot[i] -= bwd[i+WINDOW/2];
-  }
-  for(i = 0; i < slen-2; i+=3) {
-    win = max_fr(tot[i], tot[i+1], tot[i+2]);
-    for(j = 0; j < 3; j++) gp[i+j] = win;
-  }
+  for(; i < slen; i++) gp[i] = -1;
   return gp;
 }
 

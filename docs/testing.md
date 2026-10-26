@@ -259,19 +259,19 @@ byte-identical.
 The API (`tests/api_dump --proteins`, from model) went 1.18 → 1.10 s, then
 1.09 → 0.86 s.
 
-Peak RSS (MiB) since the working arrays fit each sequence (P4, 2026-10-26,
-against `b4f463a`; output byte-identical):
+Peak RSS (MiB) since the working arrays fit each sequence, the GC frame
+plot takes 1 B/bp (was 16) and a gene 112 B (was 1,112) (P4, 2026-10-26,
+against `b4f463a`, medians of 3 runs; output byte-identical):
 
 | Input | Mode | CLI | API |
 |---|---|---|---|
-| E. coli K-12 | single, trained on input | 151 → 117 | – |
-| E. coli K-12 | single, from model | 81 → 54 | 87 → 59 |
-| E. coli K-12 | meta | 135 → 113 | – |
-| E. coli 2 kbp fragments | meta | 90 → 41 | – |
-| E. coli 2 kbp fragments | single, from model | 52 → 3.2 | – |
+| E. coli K-12 | single, trained on input | 153 → 52 | – |
+| E. coli K-12 | single, from model | 84 → 51 | 87 → 56 |
+| E. coli K-12 | meta | 139 → 105 | – |
+| E. coli 2 kbp fragments | meta | 90 → 42 | – |
+| E. coli 2 kbp fragments | single, from model | 51 → 3.2 | – |
 
-Training's peak is mostly `calc_most_gc_frame`'s 16 B/bp (74 MB on E.
-coli); in meta mode the 50 bins take 27.9 MB.
+In meta mode the 50 bins take 27.9 MB.
 
 ## Sanitizers, threads, fuzzing and the stack
 

@@ -182,8 +182,8 @@ int pdg_score_nodes(prodigal_ctx_t *ctx, struct _training *tinf);
 
 /* Single genome mode, after pdg_score_nodes: the genes, in ctx->genes, and
    their number, or PRODIGAL_ERR_NOMEM if the gene array can't grow to hold
-   them. seqnum is the 1-based sequence number in the genes' IDs. */
-int pdg_single_genes(prodigal_ctx_t *ctx, int seqnum);
+   them. */
+int pdg_single_genes(prodigal_ctx_t *ctx);
 
 /* Metagenomic mode: the bins, allocated on first use. */
 int pdg_meta_init(prodigal_ctx_t *ctx);
@@ -196,6 +196,6 @@ typedef struct {
     int bin;       /* index of the bin that called them */
     int n_nodes;   /* nodes under that bin's model */
 } pdg_meta_result_t;
-int pdg_meta(prodigal_ctx_t *ctx, int seqnum, pdg_meta_result_t *res);
+int pdg_meta(prodigal_ctx_t *ctx, pdg_meta_result_t *res);
 
 #endif /* PRODIGAL_INTERNAL_H */

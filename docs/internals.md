@@ -112,6 +112,9 @@ CLI warns below 100,000 bp.
 
 1. `add_nodes`, sort.
 2. `calc_most_gc_frame`, then `record_gc_bias`, which sets `tinf->bias[3]`.
+   The GC frame plot takes 1 byte a base (upstream's took 20): the fork
+   moves one window sum per frame along the sequence instead of keeping
+   upstream's arrays of sums.
 3. `record_overlapping_starts(flag=0)` and `dprog(flag=0)`: an initial gene
    set chosen by GC frame bias alone.
 4. `calc_dicodon_gene`, which sets `tinf->gene_dc[4096]`, then
@@ -185,8 +188,8 @@ add_nodes → qsort → score_nodes(is_meta=0) → record_overlapping_starts(1)
   node scores at that moment** into `struct _gene`: strand, partial flags,
   start type, the scores, confidence, `gc_cont`, and the RBS motif and
   spacer text. The library's output (`extract_soa`) is copied from those
-  fields; the CLI prints the GFF attribute strings (`gene_data` and
-  `score_data`, 500 bytes each) that are formatted from them.
+  fields, and the CLI formats its attribute strings from them when it
+  prints (`pdg_gene_data`, `pdg_score_data`).
 
 ### Metagenomic mode (per contig)
 
@@ -202,9 +205,8 @@ add_nodes → qsort → score_nodes(is_meta=0) → record_overlapping_starts(1)
    - Otherwise run `reset_node_scores`, `score_nodes(is_meta=1)`,
      `record_overlapping_starts`, `dprog`.
    - If the path score is the best so far: `eliminate_bad_genes`,
-     `add_genes`, `tweak_final_starts`, `record_gene_data`. The genes and
-     their attribute strings for the best bin are captured **inside the
-     loop**.
+     `add_genes`, `tweak_final_starts`, `record_gene_data`. The best
+     bin's genes are captured **inside the loop**.
 3. **Recovery pass** (the CLI only, `pdg_score_nodes` after `pdg_meta`):
    rebuild and re-score the nodes with the best bin's model, *without*
    `dprog` / `eliminate_bad_genes`. The CLI uses these nodes for the `-s`
@@ -318,18 +320,18 @@ and a flag matrix. Still different:
 | `MAX_SEQ` | 32,000,000 | A contig, and training input, may have at most `MAX_BASES` bases ("Input limits" above). The CLI's readers encode up to `PDG_SEQ_CAP`, 16 bases more, room for the last training spacer. |
 | `PDG_SEQ_FLOOR` | 131,072 | Bases `seq`, `rseq` and `useq` hold at create and again at each new sequence (80 KB). They double while a sequence is encoded, up to the limit. |
 | `PDG_NODE_FLOOR` | 4,096 | Nodes the node array holds at create and again after each use (704 KB); see "Node capacity" below. |
-| `PDG_GENE_FLOOR` | 256 | Genes the `genes` array holds at create and again after each use (278 KB; `struct _gene` is 1,112 bytes). It doubles when a contig has more genes (`keep_genes`). |
+| `PDG_GENE_FLOOR` | 256 | Genes the `genes` array holds at create and again after each use (28 KB; `struct _gene` is 112 bytes). It doubles when a contig has more genes (`keep_genes`). |
 | `MASK_SIZE` | 50 | Minimum N run to mask. |
 | `MAX_LINE` | 10,000 | Header length, CLI line length. |
 | `MIN_GENE` / `MIN_EDGE_GENE` | 90 / 60 | Minimum ORF length. |
 | `NUM_META` | 50 | Metagenomic bins: 50 × 558,392 B = 27.9 MB, lazily allocated on first meta `find_genes`. |
 
-- **Per context:** about 1.7 MB at `prodigal_create`: the context itself
-  (570 KB, most of it the model) and the arrays at their floors (1.1 MB;
+- **Per context:** about 1.4 MB at `prodigal_create`: the context itself
+  (570 KB, most of it the model) and the arrays at their floors (0.8 MB;
   upstream's fixed arrays took 71 MB: 32 Mbp of bitmaps, 100,000 nodes,
   30,000 genes). Plus 27.9 MB in meta mode, plus what the sequence at hand
   needs: 0.625–1.25 B/bp of bitmaps (they double), `slen/8` nodes (below)
-  and 1,112 B a gene. The nodes and genes go back to their floors when
+  and 112 B a gene. The nodes and genes go back to their floors when
   `prodigal_find_genes` or `prodigal_train` returns, and at the next
   sequence (`pdg_clear_sequence`, which the CLI calls); the bitmaps at the
   next sequence. The mask list (8 B a region) is kept. The arrays are

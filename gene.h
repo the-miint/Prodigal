@@ -33,8 +33,8 @@ struct _gene {
   int stop_ndx;            /* Index to the stop node in the nodes file */
 
   /* The gene as record_gene_data reports it, from the nodes that chose it.
-     The library returns these; the CLI prints the two strings below, which
-     are formatted from them. */
+     The library returns these; the CLI prints them, formatted by
+     pdg_gene_data and pdg_score_data. */
   int strand;              /* 1 = forward, -1 = reverse */
   int partial_left;        /* Runs off the left edge */
   int partial_right;       /* Runs off the right edge */
@@ -43,14 +43,15 @@ struct _gene {
   double confidence;
   double gc_cont;
   struct _rbs_text rbs;
-
-  char gene_data[500];     /* String containing gene information */
-  char score_data[500];    /* String containing scoring information */
 };
 
 int add_genes(struct _gene *, int, struct _node *, int);
-void record_gene_data(struct _gene *, int, struct _node *, struct _training *,
-                      int);
+void record_gene_data(struct _gene *, int, struct _node *, struct _training *);
+
+/* The bytes of pdg_gene_data's and pdg_score_data's buffers */
+#define PDG_GENE_TEXT 500
+void pdg_gene_data(char *, const struct _gene *, int, int);
+void pdg_score_data(char *, const struct _gene *);
 void tweak_final_starts(struct _gene *, int, struct _node *, int, struct
                        _training *);
 
@@ -71,7 +72,8 @@ char pdg_protein_letter(const struct _gene *, int, unsigned char *,
                         const struct _codon_letters *);
 void write_translations(FILE *, struct _gene *, int, unsigned char *,
                         unsigned char *, unsigned char *, int,
-                        struct _training *, struct _codon_letters *, char *);
+                        struct _training *, struct _codon_letters *, int,
+                        char *);
 void write_nucleotide_seqs(FILE *, struct _gene *, int, struct _node *, 
                            unsigned char *, unsigned char *, unsigned char *,
                            int, struct _training *, int, char *);

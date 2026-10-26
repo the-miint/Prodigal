@@ -1743,6 +1743,7 @@ static void test_arrays_fit_each_sequence(void) {
     ASSERT_TRUE(ctx != NULL);
     fresh = live_bytes;
     ASSERT_TRUE(fresh < ((size_t)2 << 20));
+    ASSERT_TRUE(sizeof(struct _gene) <= 128);   /* no strings: those are printed */
     ASSERT_EQ_INT(prodigal_load_training(ctx, blob, len), PRODIGAL_OK);
     ASSERT_EQ_INT(api_emit_records(ctx, &fa, 0, 1, 0, lines_emit, &first), PRODIGAL_OK);
     ASSERT_TRUE(live_bytes == fresh);
@@ -1760,6 +1761,77 @@ static void test_arrays_fit_each_sequence(void) {
     free(blob);
     fasta_free(&fa); fasta_free(&big);
     TEST_PASS();
+}
+
+/* Upstream's calc_most_gc_frame (c1e2d36, with its allocations checked),
+   which the fork's computes with less memory. */
+static int *upstream_gc_frame(unsigned char *seq, int slen) {
+    int i, j, win, *fwd, *bwd, *tot, *gp;
+    gp = (int *)xrealloc(NULL, (size_t)slen * sizeof(int));
+    fwd = (int *)xrealloc(NULL, (size_t)slen * sizeof(int));
+    bwd = (int *)xrealloc(NULL, (size_t)slen * sizeof(int));
+    tot = (int *)xrealloc(NULL, (size_t)slen * sizeof(int));
+    for (i = 0; i < slen; i++) { fwd[i] = 0; bwd[i] = 0; tot[i] = 0; gp[i] = -1; }
+    for (i = 0; i < 3; i++) {
+        for (j = 0 + i; j < slen; j++) {
+            if (j < 3) fwd[j] = is_gc(seq, j);
+            else fwd[j] = fwd[j-3] + is_gc(seq, j);
+            if (j < 3) bwd[slen-j-1] = is_gc(seq, slen-j-1);
+            else bwd[slen-j-1] = bwd[slen-j+2] + is_gc(seq, slen-j-1);
+        }
+    }
+    for (i = 0; i < slen; i++) {
+        tot[i] = fwd[i] + bwd[i] - is_gc(seq, i);
+        if (i - WINDOW/2 >= 0) tot[i] -= fwd[i-WINDOW/2];
+        if (i + WINDOW/2 < slen) tot[i] -= bwd[i+WINDOW/2];
+    }
+    free(fwd); free(bwd);
+    for (i = 0; i < slen-2; i+=3) {
+        win = max_fr(tot[i], tot[i+1], tot[i+2]);
+        for (j = 0; j < 3; j++) gp[i+j] = win;
+    }
+    free(tot);
+    return gp;
+}
+
+/* Training's GC frame plot is upstream's, position by position: random
+   sequences (a fixed LCG, GC from 10% to 90%, some N) of every length to
+   400 bases and a few longer, so that every slen % 3 and window edge is
+   met, and max_fr's ties too. It takes a byte a base (upstream's 20). */
+static void test_gc_frame_plot(void) {
+    TEST_START("training's GC frame plot equals upstream's, 1 byte a base");
+    static const int32_t longer[] = { 1000, 3001, 30002 };   /* ascending */
+    const int32_t nlonger = (int32_t)(sizeof(longer) / sizeof(longer[0]));
+    uint32_t x = 12345;
+    int32_t len, i, n, bad = -1;
+    size_t before;
+    char *s = (char *)xrealloc(NULL, (size_t)longer[nlonger - 1]);
+    prodigal_ctx_t *ctx = make_counted_ctx(0);
+    ASSERT_TRUE(ctx != NULL);
+    for (n = 0; n < 400 + nlonger && bad < 0; n++) {
+        len = n < 400 ? n + 1 : longer[n - 400];
+        for (i = 0; i < len; i++) {
+            x = x * 1103515245u + 12345u;
+            s[i] = (x >> 16) % 100 < (uint32_t)(10 + n % 81) ?
+                   "GC"[(x >> 8) & 1] : ((x >> 4) % 50 == 0 ? 'N' : "AT"[(x >> 8) & 1]);
+        }
+        ASSERT_EQ_INT(prodigal_set_sequence(ctx, s, len, NULL), PRODIGAL_OK);
+        int *want = upstream_gc_frame(ctx->seq, len);
+        before = peak_bytes = live_bytes;
+        signed char *got = calc_most_gc_frame(ctx, ctx->seq, len);
+        ASSERT_TRUE(got != NULL);
+        ASSERT_TRUE(peak_bytes - before <= (size_t)len);
+        for (i = 0; i < len && bad < 0; i++)
+            if (got[i] != want[i]) bad = i;
+        if (bad >= 0)
+            printf("[FAIL] length %d, position %d: %d, upstream %d\n", len,
+                   bad, got[bad], want[bad]);
+        free(want);
+        pdg_free(ctx, got);
+    }
+    prodigal_destroy(ctx);
+    free(s);
+    if (bad < 0) TEST_PASS();
 }
 
 /* Encoding a sequence the bitmaps can't grow for is a clean error that
@@ -2591,6 +2663,7 @@ int main(void) {
     test_gene_array_grows();
     test_arrays_fit_each_sequence();
     test_sequence_alloc_failures();
+    test_gc_frame_plot();
     test_masks_past_max();
     test_length_limits();
 

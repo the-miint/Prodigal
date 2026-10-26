@@ -1,13 +1,16 @@
 VERSION 2.6.5 (unreleased)
 
 * Less memory, with the same output: the working arrays fit the sequence at
-hand instead of upstream's fixed 71 MB. A new library context holds about
-1.7 MB; what a long contig needed is freed when prodigal_find_genes returns,
+hand instead of upstream's fixed 71 MB, training's GC frame plot takes 1
+byte a base instead of 20, and a gene 112 bytes instead of 1,112 (the CLI
+formats its strings when it prints). A new library context holds about
+1.4 MB; what a long contig needed is freed when prodigal_find_genes returns,
 and the sequence's own bitmaps at the next one. Peak memory on E. coli K-12
-from a model falls from 81 to 54 MiB, and on its 2 kbp fragments in
-metagenomic mode from 90 to 41 MiB (docs/testing.md). Running out of memory
-while reading a sequence is an error that says for what, the sequence or
-its masked regions (CLI exit 52 in training, 55 otherwise).
+falls from 153 to 52 MiB in training, from 84 to 51 MiB from a model, and
+on its 2 kbp fragments in metagenomic mode from 90 to 42 MiB
+(docs/testing.md). Running out of memory while reading a sequence is an
+error that says for what, the sequence or its masked regions (CLI exit 52
+in training, 55 otherwise).
 * Faster, with the same output: the bit operations are inline (bitmap.h;
 bitmap.c is gone, so a build that lists the sources must drop it), and
 proteins are translated from a table of each codon's letter. Runs take

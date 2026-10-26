@@ -177,8 +177,8 @@ defect.
   and memory"), so output is unchanged wherever upstream didn't overflow.
 - **Unchecked allocations (fixed in 2.6.5).** `calc_mer_bg` did not check
   its `malloc`; it now counts in its output array and allocates nothing.
-  `calc_most_gc_frame` leaked on a partial allocation failure; it now makes
-  one allocation, through the context's allocator.
+  `calc_most_gc_frame` leaked on a partial allocation failure; it now frees
+  what it allocated (through the context's allocator).
 
 ## Fork deviations (CLI)
 

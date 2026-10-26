@@ -489,7 +489,7 @@ static int build_nodes(prodigal_ctx_t *ctx, struct _training *tinf) {
 *******************************************************************************/
 
 int pdg_train(prodigal_ctx_t *ctx, pdg_train_report_fn report) {
-    int *gc_frame;
+    signed char *gc_frame;
     int ipath, rc;
 
     if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
@@ -738,8 +738,7 @@ int pdg_score_nodes(prodigal_ctx_t *ctx, struct _training *tinf) {
 
 /* The genes on the DP path that ends at node ipath (-1: none), into
    ctx->genes with their attributes under model tinf; returns how many. */
-static int keep_genes(prodigal_ctx_t *ctx, int ipath, struct _training *tinf,
-                      int seqnum) {
+static int keep_genes(prodigal_ctx_t *ctx, int ipath, struct _training *tinf) {
     int ng;
     eliminate_bad_genes(ctx->nodes, ipath, tinf);
     /* When the genes don't fit (upstream truncated at 30,000), the array
@@ -752,15 +751,15 @@ static int keep_genes(prodigal_ctx_t *ctx, int ipath, struct _training *tinf,
         }
     }
     tweak_final_starts(ctx->genes, ng, ctx->nodes, ctx->nn, tinf);
-    record_gene_data(ctx->genes, ng, ctx->nodes, tinf, seqnum);
+    record_gene_data(ctx->genes, ng, ctx->nodes, tinf);
     return ng;
 }
 
-int pdg_single_genes(prodigal_ctx_t *ctx, int seqnum) {
+int pdg_single_genes(prodigal_ctx_t *ctx) {
     int ipath;
     record_overlapping_starts(ctx->nodes, ctx->nn, &ctx->tinf, 1);
     ipath = dprog(ctx->nodes, ctx->nn, &ctx->tinf, 1);
-    return keep_genes(ctx, ipath, &ctx->tinf, seqnum);
+    return keep_genes(ctx, ipath, &ctx->tinf);
 }
 
 int pdg_meta_init(prodigal_ctx_t *ctx) {
@@ -789,7 +788,7 @@ int pdg_meta_init(prodigal_ctx_t *ctx) {
     return PRODIGAL_OK;
 }
 
-int pdg_meta(prodigal_ctx_t *ctx, int seqnum, pdg_meta_result_t *res) {
+int pdg_meta(prodigal_ctx_t *ctx, pdg_meta_result_t *res) {
     double low, high, max_score = -100.0, path_score;
     struct _training *tinf;
     int i, ipath, rc;
@@ -837,7 +836,7 @@ int pdg_meta(prodigal_ctx_t *ctx, int seqnum, pdg_meta_result_t *res) {
             max_score = path_score;
             res->bin = i;
             res->n_nodes = ctx->nn;
-            rc = keep_genes(ctx, ipath, tinf, seqnum);
+            rc = keep_genes(ctx, ipath, tinf);
             if (rc < 0) return rc;
             res->n_genes = rc;
         }
@@ -1030,7 +1029,7 @@ static int find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
 
     if (ctx->config.meta_mode) {
         pdg_meta_result_t res;
-        rc = pdg_meta(ctx, 1, &res);
+        rc = pdg_meta(ctx, &res);
         if (rc != PRODIGAL_OK) return rc;
         ng = res.n_genes;
         nn = res.n_nodes;
@@ -1038,7 +1037,7 @@ static int find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
     } else {
         rc = pdg_score_nodes(ctx, &ctx->tinf);
         if (rc != PRODIGAL_OK) return rc;
-        ng = pdg_single_genes(ctx, 1);
+        ng = pdg_single_genes(ctx);
         if (ng < 0) return ng;
         nn = ctx->nn;
     }

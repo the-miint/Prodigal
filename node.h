@@ -91,7 +91,7 @@ int compare_nodes(const void *, const void *);
 int stopcmp_nodes(const void *, const void *);
 
 void record_overlapping_starts(struct _node *, int, struct _training *, int);
-void record_gc_bias(int *, struct _node *, int, struct _training *);
+void record_gc_bias(signed char *, struct _node *, int, struct _training *);
 
 void calc_dicodon_gene(struct _training *, unsigned char *, unsigned char *,
                        int, struct _node *, int);

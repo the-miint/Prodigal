@@ -417,13 +417,13 @@ int main(int argc, char *argv[]) {
       if(start_ptr != stdout)
         write_start_file(start_ptr, ctx->nodes, ctx->nn, tinf, num_seq,
                          ctx->slen, 0, NULL, VERSION, cur_header);
-      if((ng = pdg_single_genes(ctx, num_seq)) < 0) pipeline_failed(ctx);
+      if((ng = pdg_single_genes(ctx)) < 0) pipeline_failed(ctx);
     }
 
     else { /* Metagenomic Version */
       /* Every bin, then the best bin's nodes on their own, which column 6
          and the start file are printed from */
-      if(pdg_meta(ctx, num_seq, &meta) != PRODIGAL_OK) pipeline_failed(ctx);
+      if(pdg_meta(ctx, &meta) != PRODIGAL_OK) pipeline_failed(ctx);
       ng = meta.n_genes;
       tinf = ctx->meta[meta.bin].tinf;
       desc = ctx->meta[meta.bin].desc;
@@ -444,7 +444,7 @@ int main(int argc, char *argv[]) {
     fflush(output_ptr);
     if(trans_ptr != stdout)
       write_translations(trans_ptr, ctx->genes, ng, ctx->seq, ctx->rseq,
-                         ctx->useq, ctx->slen, tinf, &ctx->codons,
+                         ctx->useq, ctx->slen, tinf, &ctx->codons, num_seq,
                          short_header);
     if(nuc_ptr != stdout)
       write_nucleotide_seqs(nuc_ptr, ctx->genes, ng, ctx->nodes, ctx->seq,
