@@ -106,7 +106,7 @@ make distclean          # removes objects, binaries and libs
 | `sequence.c/.h` | 2-bit base tests, codon tests, the supported translation tables (`pdg_trans_table_unsupported`), `rcom_seq`, `amino()` translation, the CLI's FASTA/GenBank/EMBL readers (which encode through `pdg_encode_*` in `prodigal_api.c`), SD motif scanners. |
 | `training.c/.h` | `struct _training`, training-file I/O, 50 hard-coded `initialize_metagenome_N` models (generated; never hand-edit). |
 | `metagenomic.c/.h` | `initialize_metagenomic_bins` and the bin descriptions. The header declares functions that don't exist (`score_edges` etc.). |
-| `bitmap.c/.h` | Bit get/set/clear/toggle (`test`, `set`, …; unprefixed global names). |
+| `bitmap.h` | Bit test/set/clear/toggle, `static inline` (every base read calls them; upstream's `bitmap.c` is gone). |
 | `fptr.h` | zlib or stdio file abstraction, CLI only. |
 | `test_api.c` | C test suite for the library (custom assert macros). |
 | `testdata/ground_truth/` | Reference outputs from an upstream build on `anthus_aco.fas`. |
@@ -162,8 +162,8 @@ make distclean          # removes objects, binaries and libs
 - **Stack:** library code runs on Rust worker threads with 2 MiB stacks.
   Each `initialize_metagenome_N` uses about 558 KB. Don't add large stack
   arrays; put them on the heap. `make stack` fails on a frame over 1 MiB.
-- **Symbols:** core functions have short global names (`set`, `test`,
-  `dprog`, `amino`, …). Today they don't collide with the other libraries
+- **Symbols:** core functions have short global names (`dprog`, `amino`,
+  `is_stop`, …). Today they don't collide with the other libraries
   linked into GPL-boundary. `-fvisibility=hidden` does not protect against
   static link-time collisions, so new non-static functions should carry a
   `prodigal_`/`pdg_` prefix or be `static`.

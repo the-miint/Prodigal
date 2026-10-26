@@ -245,6 +245,19 @@ The API's extra peak RSS came from zeroing the whole grown node array with
 coli single from model 84 MiB, meta 138 MiB, single trained 152 MiB).
 Compare later measurements with this table on the same machine.
 
+Faster since, with the same output (P4, 2026-10-23/24): CLI wall time on
+the same machine, each change against the commit before it, medians of 3–5
+runs (`hyperfine`; other users' jobs were running), every output
+byte-identical.
+
+| Change | E. coli single, trained | E. coli single, from model | E. coli meta | 2 kbp fragments, meta |
+|---|---|---|---|---|
+| Proteins from a codon table (`b4f463a`) | – | 1.20 → 1.10 s (`-a`) | – | – |
+| Inline bit operations | 1.06 → 0.82 s | 1.08 → 0.83 s (`-a`) | 14.42 → 12.31 s | 6.02 → 4.06 s |
+
+The API (`tests/api_dump --proteins`, from model) went 1.18 → 1.10 s, then
+1.09 → 0.86 s.
+
 ## Sanitizers, threads, fuzzing and the stack
 
 The library has no mutable globals; keep it that way and keep these clean.

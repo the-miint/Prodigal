@@ -1,5 +1,9 @@
 VERSION 2.6.5 (unreleased)
 
+* Faster, with the same output: the bit operations are inline (bitmap.h;
+bitmap.c is gone, so a build that lists the sources must drop it), and
+proteins are translated from a table of each codon's letter. Runs take
+13-33% less time on E. coli K-12 and its 2 kbp fragments (docs/testing.md).
 * Genetic codes: a translation table is accepted only if Prodigal uses
 it exactly as NCBI defines it (NCBI gc.prt 4.6; docs/genetic-codes.md has
 the rules and the reasons per table). Of the 19 tables upstream accepts,

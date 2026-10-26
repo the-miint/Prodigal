@@ -21,9 +21,26 @@
 #ifndef BITMAP_H_
 #define BITMAP_H_
 
-unsigned char test(unsigned char *, int);
-void clear(unsigned char *, int);
-void set(unsigned char *, int);
-void toggle(unsigned char *, int);
+/* Inline (the fork's): every read of a base tests bits (docs/internals.md) */
+
+/* Test a bit, 0 = not set, 1 = set */
+static inline unsigned char test(const unsigned char *bm, int ndx) {
+  return (bm[ndx>>3] >> (ndx&0x07)) & 1;
+}
+
+/* Clear a bit (set it to 0) */
+static inline void clear(unsigned char *bm, int ndx) {
+  bm[ndx>>3] &= ~(1 << (ndx&0x07));
+}
+
+/* Set a bit to 1 */
+static inline void set(unsigned char *bm, int ndx) {
+  bm[ndx>>3] |= (1 << (ndx&0x07));
+}
+
+/* Flip a bit's value 0->1 or 1->0 */
+static inline void toggle(unsigned char *bm, int ndx) {
+  bm[ndx>>3] ^= (1 << (ndx&0x07));
+}
 
 #endif

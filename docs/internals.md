@@ -45,6 +45,12 @@ through the custom allocator; upstream stopped at 5,000.
 one. That spacer puts a stop in all six frames. The training GC is computed
 over the concatenation, spacers included.
 
+The bit operations (`test`, `set`, `clear`, `toggle`) are `static inline`
+in `bitmap.h`: every read of a base tests bits, and as ordinary functions
+in upstream's `bitmap.c` the calls took 13–15% of a single-mode run. Inlined, the runs
+in `testing.md` ("Performance baselines") take 13–33% less time, with the
+same output.
+
 ## Nodes
 
 A **node** (`struct _node`, `node.h`, 176 bytes) is a potential start or stop
@@ -334,7 +340,7 @@ and a flag matrix. Still different:
 - **Makefile:** builds two object sets. `%.o` for the CLI keeps stderr
   messages; `%.lib.o` / `%.pic.o` define `PRODIGAL_NO_MAIN` for
   `libprodigal.a` and `libprodigal.so`. Only the CLI links zlib.
-- **GPL-boundary** compiles the eight library sources itself
+- **GPL-boundary** compiles the seven library sources itself
   (`build_prodigal()`), with `-DPRODIGAL_NO_MAIN -O3 -fvisibility=hidden`,
   into a static archive linked into a Rust binary alongside FastTree,
   SortMeRNA, Bowtie2 and RocksDB.

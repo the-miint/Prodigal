@@ -53,7 +53,7 @@ TARGET  = prodigal
 INSTALLDIR  = /usr/local/bin
 
 # Source file groups
-CORE_SOURCES = bitmap.c dprog.c gene.c metagenomic.c node.c sequence.c training.c
+CORE_SOURCES = dprog.c gene.c metagenomic.c node.c sequence.c training.c
 API_SOURCES  = prodigal_api.c
 CLI_SOURCE   = main.c
 TEST_SOURCE  = test_api.c
