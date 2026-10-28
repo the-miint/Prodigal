@@ -991,6 +991,79 @@ static void test_error_recovery(void) {
     TEST_PASS();
 }
 
+/* Every rejected sequence leaves none loaded (prodigal.h), the argument
+   checks included: a caller that ignores the error must not get the genes
+   of the sequence before it. */
+static void test_rejected_sequence_unloads(void) {
+    TEST_START("a rejected sequence leaves none loaded");
+    fasta_t fa;
+    if (!load_anthus(&fa)) return;
+    prodigal_ctx_t *ctx = make_ctx(1);
+    ASSERT_TRUE(ctx != NULL);
+    const char *seqs[1] = { fa.seqs[0] };
+    int32_t lens[1] = { fa.lens[0] };
+    prodigal_seq_info_t info;
+    int k;
+
+    for (k = 0; k < 4; k++) {
+        int rc;
+        ASSERT_EQ_INT(prodigal_set_sequence(ctx, fa.seqs[0], fa.lens[0], "a"),
+                      PRODIGAL_OK);
+        switch (k) {
+        case 0: rc = prodigal_set_sequence(ctx, NULL, 10, "b"); break;
+        case 1: rc = prodigal_set_sequence(ctx, fa.seqs[0], 0, "b"); break;
+        case 2: rc = prodigal_set_training_sequences(ctx, NULL, NULL, lens, 1);
+                break;
+        default: rc = prodigal_set_training_sequences(ctx, seqs, NULL, lens, 0);
+        }
+        ASSERT_EQ_INT(rc, PRODIGAL_ERR_INVALID_INPUT);
+        ASSERT_TRUE(strlen(prodigal_last_error(ctx)) > 0);
+        ASSERT_EQ_INT(prodigal_get_seq_info(ctx, &info), PRODIGAL_OK);
+        ASSERT_EQ_INT(info.length, 0);
+        static prodigal_genes_soa_t sentinel;
+        prodigal_genes_soa_t *genes = &sentinel;
+        ASSERT_EQ_INT(prodigal_find_genes(ctx, &genes, NULL),
+                      PRODIGAL_ERR_INVALID_INPUT);
+        ASSERT_TRUE(genes == NULL);
+        ASSERT_TRUE(strstr(prodigal_last_error(ctx), "No sequence") != NULL);
+    }
+
+    fasta_free(&fa);
+    prodigal_destroy(ctx);
+    TEST_PASS();
+}
+
+/* On every error the gene finders set *genes_out to NULL, a NULL context
+   included, and a NULL genes_out with a context says so. */
+static void test_find_genes_clears_output(void) {
+    TEST_START("find_genes: NULL output on every error");
+    static prodigal_genes_soa_t soa_sentinel;
+    static prodigal_genes_t aos_sentinel;
+    prodigal_genes_soa_t *soa = &soa_sentinel;
+    prodigal_genes_t *aos = &aos_sentinel;
+
+    ASSERT_EQ_INT(prodigal_find_genes(NULL, &soa, NULL),
+                  PRODIGAL_ERR_INVALID_INPUT);
+    ASSERT_TRUE(soa == NULL);
+    ASSERT_EQ_INT(prodigal_find_genes_aos(NULL, &aos, NULL),
+                  PRODIGAL_ERR_INVALID_INPUT);
+    ASSERT_TRUE(aos == NULL);
+
+    prodigal_ctx_t *ctx = make_ctx(1);
+    ASSERT_TRUE(ctx != NULL);
+    ASSERT_EQ_INT(prodigal_find_genes(ctx, NULL, NULL),
+                  PRODIGAL_ERR_INVALID_INPUT);
+    ASSERT_TRUE(strstr(prodigal_last_error(ctx), "genes_out") != NULL);
+    prodigal_destroy(ctx);
+    ctx = make_ctx(1);
+    ASSERT_TRUE(ctx != NULL);
+    ASSERT_EQ_INT(prodigal_find_genes_aos(ctx, NULL, NULL),
+                  PRODIGAL_ERR_INVALID_INPUT);
+    ASSERT_TRUE(strstr(prodigal_last_error(ctx), "genes_out") != NULL);
+    prodigal_destroy(ctx);
+    TEST_PASS();
+}
+
 /*******************************************************************************
     Phase 8: Allocator Hooks
 *******************************************************************************/
@@ -2627,6 +2700,8 @@ int main(void) {
     test_context_reuse();
     test_find_genes_without_sequence();
     test_error_recovery();
+    test_rejected_sequence_unloads();
+    test_find_genes_clears_output();
 
     printf("\nPhase 8: Allocator Hooks\n");
     test_custom_allocator();

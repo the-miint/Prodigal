@@ -373,7 +373,8 @@ void pdg_encode_end(prodigal_ctx_t *ctx, pdg_encoder_t *e) {
 *******************************************************************************/
 
 /* Encode seqs[0, n) (NULL or empty ones add nothing), with a spacer after
-   each if n > 1, as the sequence to work on; header names it. */
+   each if n > 1, as the sequence to work on; header names it.  Every error,
+   no bases at all included, leaves no sequence loaded. */
 static int encode_seqs(prodigal_ctx_t *ctx, const char *const *seqs,
                        const int32_t *lens, int32_t n, const char *header) {
     pdg_encoder_t e;
@@ -395,8 +396,8 @@ static int encode_seqs(prodigal_ctx_t *ctx, const char *const *seqs,
             PDG_SET_ERROR(ctx, rc, "Sequence too long (at most %d bases, not "
                           "counting characters outside A-z)", MAX_BASES);
         else
-            PDG_SET_ERROR(ctx, rc = PRODIGAL_ERR_INVALID_INPUT,
-                          "No valid bases found");
+            PDG_SET_ERROR(ctx, rc = PRODIGAL_ERR_INVALID_INPUT, "No bases "
+                          "(NULL or empty input, or no character in A-z)");
         return rc;
     }
     pdg_encode_end(ctx, &e);
@@ -410,11 +411,6 @@ static int encode_seqs(prodigal_ctx_t *ctx, const char *const *seqs,
 int prodigal_set_sequence(prodigal_ctx_t *ctx, const char *seq, int32_t len,
                           const char *header) {
     if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
-    if (seq == NULL || len <= 0) {
-        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
-                      "Sequence is NULL or length <= 0");
-        return PRODIGAL_ERR_INVALID_INPUT;
-    }
     return encode_seqs(ctx, &seq, &len, 1, header);
 }
 
@@ -422,13 +418,9 @@ int prodigal_set_training_sequences(prodigal_ctx_t *ctx, const char **seqs,
                                     const char **headers, const int32_t *lens,
                                     int32_t n_seqs) {
     if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
-    if (seqs == NULL || lens == NULL || n_seqs <= 0) {
-        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
-                      "Invalid training sequence arguments");
-        return PRODIGAL_ERR_INVALID_INPUT;
-    }
+    if (seqs == NULL || lens == NULL) n_seqs = 0;   /* rejected: no bases */
     return encode_seqs(ctx, seqs, lens, n_seqs,
-                       headers != NULL ? headers[0] : NULL);
+                       headers != NULL && n_seqs > 0 ? headers[0] : NULL);
 }
 
 int prodigal_get_seq_info(const prodigal_ctx_t *ctx, prodigal_seq_info_t *info) {
@@ -1014,8 +1006,12 @@ static int find_genes(prodigal_ctx_t *ctx, prodigal_genes_soa_t **genes_out,
     struct _training *tinf;
     int rc, ng, nn, bin = -1;
 
-    if (ctx == NULL || genes_out == NULL) return PRODIGAL_ERR_INVALID_INPUT;
-    *genes_out = NULL;
+    if (genes_out != NULL) *genes_out = NULL;
+    if (ctx == NULL) return PRODIGAL_ERR_INVALID_INPUT;
+    if (genes_out == NULL) {
+        PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT, "genes_out is NULL");
+        return PRODIGAL_ERR_INVALID_INPUT;
+    }
     if (!ctx->config.meta_mode && !ctx->trained) {
         PDG_SET_ERROR(ctx, PRODIGAL_ERR_INVALID_INPUT,
                       "No training data loaded (call prodigal_train or "
@@ -1064,9 +1060,9 @@ int prodigal_find_genes_aos(prodigal_ctx_t *ctx, prodigal_genes_t **genes_out,
     prodigal_genes_t *aos;
     int rc, i;
 
-    if (genes_out == NULL) return PRODIGAL_ERR_INVALID_INPUT;
-    *genes_out = NULL;
-    rc = prodigal_find_genes(ctx, &soa, stats_out);
+    /* find_genes checks ctx and genes_out (a NULL one passes as NULL) */
+    if (genes_out != NULL) *genes_out = NULL;
+    rc = prodigal_find_genes(ctx, genes_out != NULL ? &soa : NULL, stats_out);
     if (rc != PRODIGAL_OK) return rc;
 
     /* Convert SOA to AOS */
