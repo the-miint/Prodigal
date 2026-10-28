@@ -136,6 +136,10 @@ static void test_version_constants(void) {
     ASSERT_TRUE(strlen(PRODIGAL_VERSION_STRING) > 0);
     /* Runtime version must match compile-time */
     ASSERT_TRUE(strcmp(prodigal_version_string(), PRODIGAL_VERSION_STRING) == 0);
+    char parts[32];
+    snprintf(parts, sizeof(parts), "%d.%d.%d", PRODIGAL_VERSION_MAJOR,
+             PRODIGAL_VERSION_MINOR, PRODIGAL_VERSION_PATCH);
+    ASSERT_TRUE(strcmp(parts, PRODIGAL_VERSION_STRING) == 0);
     ASSERT_EQ_INT(prodigal_abi_version(), PRODIGAL_ABI_VERSION);
     TEST_PASS();
 }

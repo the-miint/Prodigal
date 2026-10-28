@@ -101,8 +101,9 @@ with `cscore + sscore < 0` for elimination. **The scores the CLI reports
 include this adjustment.**
 
 `calculate_confidence(score, st_wt)` (`gene.c`) is
-`logistic(score / st_wt) * 100`, clamped to `[50, 99.99]`, where
-`score = cscore + sscore`.
+`logistic(score / st_wt) * 100`, in `[50, 100]`, where
+`score = cscore + sscore` (why 100.0 and not 99.99: `upstream-behavior.md`,
+quirk 7).
 
 ## Training (single-genome mode)
 
@@ -328,7 +329,7 @@ and a flag matrix. Still different:
 
 - **Per context:** about 1.4 MB at `prodigal_create`: the context itself
   (570 KB, most of it the model) and the arrays at their floors (0.8 MB;
-  upstream's fixed arrays took 71 MB: 32 Mbp of bitmaps, 100,000 nodes,
+  upstream's fixed arrays took 68 MB: 32 Mbp of bitmaps, 100,000 nodes,
   30,000 genes). Plus 27.9 MB in meta mode, plus what the sequence at hand
   needs: 0.625–1.25 B/bp of bitmaps (they double), `slen/8` nodes (below)
   and 112 B a gene. The nodes and genes go back to their floors when

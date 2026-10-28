@@ -280,6 +280,18 @@ against `b4f463a`, medians of 3 runs; output byte-identical):
 
 In meta mode the 50 bins take 27.9 MB.
 
+**2.6.5 against 2.6.4** (`dd88690`), the CLI, measured at `c38e4c6` (the
+code 2.6.5 ships) on a quiet machine (2026-10-27, load under 1.4; time
+medians of 5, peak RSS medians of 3; every output and the model
+byte-identical). `CHANGES` quotes these.
+
+| Input | Mode | Time | Peak RSS (MiB) |
+|---|---|---|---|
+| E. coli K-12 | training (`-t` writes the model) | 1.32 → 0.86 s | 206 → 50 |
+| E. coli K-12 | single, from model (`-a`) | 1.36 → 0.85 s | 78 → 50 |
+| E. coli K-12 | meta | 14.50 → 12.40 s | 133 → 105 |
+| E. coli 2 kbp fragments | meta | 6.08 → 4.10 s | 87 → 42 |
+
 ## Sanitizers, threads, fuzzing and the stack
 
 The library has no mutable globals; keep it that way and keep these clean.

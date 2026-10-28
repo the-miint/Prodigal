@@ -31,10 +31,10 @@
  *
  * Two usage patterns are supported:
  *
- *   High-level (single-call):
+ *   Metagenomic mode (no training):
  *     config_init -> create -> set_sequence -> find_genes -> free -> destroy
  *
- *   Low-level (multi-step):
+ *   Single-genome mode (train, or load a model with load_training):
  *     config_init -> create -> set_training_sequences -> train ->
  *     set_sequence -> find_genes -> free -> (repeat per sequence) -> destroy
  *
@@ -46,7 +46,8 @@
  *   4. Load input:
  *      - Metagenomic mode: call prodigal_set_sequence() per contig, then
  *        prodigal_find_genes().  Training data is built-in (50 pre-trained
- *        models, lazily initialized on first use).
+ *        models, lazily initialized on first use), so the calls that train,
+ *        load or adjust a model are refused (prodigal_config_t.meta_mode).
  *      - Single-genome mode: call prodigal_set_training_sequences() with all
  *        contigs, then prodigal_train().  Alternatively, load a previously
  *        exported training file with prodigal_load_training().  Then call
@@ -57,22 +58,22 @@
  * Memory model
  * ------------
  *   - The context struct itself is allocated with system malloc/free.
- *   - Internal working buffers (sequence, nodes, genes) use the custom
- *     allocator if provided, otherwise system malloc/free.
- *   - Output structs (prodigal_genes_soa_t, prodigal_genes_t) are always
- *     allocated with system malloc so they can be freed without a context
- *     reference.  This matches the convention used by GPL-boundary's
- *     FastTree integration.
+ *   - The context's working memory uses the custom allocator if provided,
+ *     otherwise system malloc/free: the sequence, nodes, genes and masked
+ *     regions, training's scratch and, in metagenomic mode, the 50 bins
+ *     (sizes and lifetimes: prodigal_create()).
+ *   - Output structs (prodigal_genes_soa_t, prodigal_genes_t) never use the
+ *     custom allocator, so they can be freed without a context: with
+ *     prodigal_genes_free() / prodigal_genes_aos_free(), never free() (the
+ *     SOA's backing block is an aligned allocation, _aligned_malloc on
+ *     Windows).
  *   - prodigal_destroy(NULL) and prodigal_genes_free(NULL) are safe no-ops.
  *
  * Output formats
  * --------------
  *   - SOA (prodigal_genes_soa_t): Structure-of-Arrays layout ideal for
- *     columnar / Apache Arrow consumers.  All numeric arrays are carved from
- *     a single 16-byte-aligned backing allocation (_base).  The strings
- *     (rbs_motif, rbs_spacer) and, with want_proteins, the proteins live in
- *     it too: they are valid until prodigal_genes_free() and are not freed
- *     on their own.
+ *     columnar / Apache Arrow consumers, in one backing allocation (see the
+ *     struct).
  *   - AOS (prodigal_genes_t): Array-of-Structures layout for convenient
  *     per-gene iteration.  Also backed by a single allocation.
  *
@@ -81,13 +82,13 @@
  *   - All fallible functions return int: PRODIGAL_OK (0) on success,
  *     negative error codes on failure.
  *   - prodigal_strerror() maps an error code to a static category string.
- *   - prodigal_last_error() returns a detailed message from the context,
- *     valid until the next API call on that context or prodigal_destroy().
+ *   - prodigal_last_error() returns a detailed message from the context;
+ *     read it right after the call that failed (see prodigal_last_error()).
  *   - The context is reusable after an error -- call prodigal_set_sequence()
  *     again and retry.
  *   - The library never calls exit(), abort(), or assert().
- *   - The library never writes to stdout or stderr.  Use log_callback for
- *     diagnostic output.
+ *   - The library never writes to stdout or stderr.  prodigal_train()
+ *     reports its progress to log_callback.
  *
  * Thread safety
  * -------------
@@ -95,6 +96,12 @@
  *     concurrently from different threads without synchronization.
  *   - A single context must not be used from multiple threads simultaneously.
  *   - No global mutable state exists in the library.
+ *   - Callbacks and alloc_fn/free_fn run on the thread that made the call;
+ *     a callback must not call the library on the same context.  Contexts
+ *     that share an allocator call it concurrently.
+ *   - prodigal_config_validate(), prodigal_training_info(),
+ *     prodigal_strerror() and the version and ABI functions need no
+ *     context.
  *
  * GPL-boundary integration
  * ------------------------
@@ -103,9 +110,12 @@
  *     struct's field offsets in their tests.
  *   - Build with -DPRODIGAL_NO_MAIN to exclude the CLI entry point when
  *     compiling as a static library for embedding.
- *   - The Makefile produces libprodigal.a (static) and libprodigal.so
- *     (shared).  The shared library has no zlib dependency; gzip support
- *     is only used by the CLI's file I/O path.
+ *   - The Makefile builds libprodigal.a (static) and libprodigal.so
+ *     (shared) when asked for them (plain make builds the CLI).  Neither
+ *     needs zlib: only the CLI is built with gzip support.
+ *   - Build with -ffp-contract=off, as the Makefile does: without it ARM64
+ *     builds fuse multiply-adds and print some scores differently from
+ *     x86-64 in the last digit.
  *
  * Quick example (metagenomic mode)
  * --------------------------------
@@ -206,8 +216,8 @@ extern "C" {
 /**@{*/
 #define PRODIGAL_VERSION_MAJOR 2
 #define PRODIGAL_VERSION_MINOR 6
-#define PRODIGAL_VERSION_PATCH 4
-#define PRODIGAL_VERSION_STRING "2.6.4"
+#define PRODIGAL_VERSION_PATCH 5
+#define PRODIGAL_VERSION_STRING "2.6.5"
 /**@}*/
 
 /**
@@ -219,7 +229,7 @@ extern "C" {
 #define PRODIGAL_OK                   0
 #define PRODIGAL_ERR_NOMEM           -1  /**< Memory allocation failed */
 #define PRODIGAL_ERR_INVALID_CONFIG  -2  /**< Bad config (NULL, wrong struct_size, invalid field) */
-#define PRODIGAL_ERR_INVALID_INPUT   -3  /**< Bad input (NULL sequence, no sequence loaded) */
+#define PRODIGAL_ERR_INVALID_INPUT   -3  /**< Bad argument, or a call the context's state does not allow (see each function) */
 #define PRODIGAL_ERR_INTERNAL        -4  /**< Internal error (should not happen) */
 #define PRODIGAL_ERR_SEQ_TOO_SHORT   -5  /**< Sequence < 20000 bp for single-genome training */
 #define PRODIGAL_ERR_CANCELLED       -6  /**< Cancelled by progress_callback returning nonzero */
@@ -248,9 +258,10 @@ typedef struct prodigal_ctx prodigal_ctx_t;
  * struct_size (the first field); see also prodigal_abi_layout().
  */
 typedef struct {
-    /** Must be first field.  Set by prodigal_config_init().  Used for ABI
-     *  version detection: prodigal_create() rejects configs where
-     *  struct_size != sizeof(prodigal_config_t). */
+    /** Must be first field.  Set by prodigal_config_init().
+     *  prodigal_create() rejects configs where struct_size !=
+     *  sizeof(prodigal_config_t); that misses an addition that fills
+     *  padding, which prodigal_config_init() catches. */
     size_t struct_size;
 
     /** NCBI translation table (genetic code) number.  Default: 11
@@ -258,9 +269,8 @@ typedef struct {
      *  13, 15, 21, 25, 26, 32, the NCBI codes Prodigal uses exactly as NCBI
      *  defines them (docs/genetic-codes.md).  An unsupported table
      *  makes prodigal_create() return NULL; prodigal_config_validate()
-     *  says why.  With meta_mode, any table but 11 is refused: the bins
-     *  choose table 11 or 4 for each sequence, so a genome that uses
-     *  another table needs single mode. */
+     *  says why.  With meta_mode only 11 (see meta_mode): a genome that
+     *  uses another table needs single mode. */
     int    trans_table;
 
     /** Nonzero: closed ends -- do not allow genes to run off sequence edges.
@@ -272,27 +282,36 @@ typedef struct {
     int    mask_regions;
 
     /** Nonzero: bypass Shine-Dalgarno trainer and force a full upstream
-     *  motif scan.  Default: 0 (auto-detect SD usage).  Metagenomic mode
-     *  refuses it: each bin has its own SD setting. */
+     *  motif scan.  Default: 0 (auto-detect SD usage).  Refused with
+     *  meta_mode. */
     int    force_nonsd;
 
-    /** Nonzero: metagenomic mode (use 50 pre-trained models).
-     *  Zero: single-genome mode (requires training).  Default: 0.
-     *  Metagenomic mode refuses the single-genome model's settings, which
-     *  it would ignore: a trans_table other than 11, force_nonsd, a
-     *  start_weight other than the default, and the calls that train, load
-     *  or adjust a model. */
+    /** Nonzero: metagenomic mode (50 pre-trained bins, each with its own
+     *  model, table 11 or 4).  Zero: single-genome mode (requires
+     *  training).  Default: 0.  Metagenomic mode refuses the single-genome
+     *  model's settings, which it would ignore: in the config, a
+     *  trans_table other than 11, a nonzero force_nonsd, or a start_weight
+     *  other than exactly 4.35 (prodigal_config_validate() says which); on
+     *  the context, prodigal_train(), prodigal_load_training() and the
+     *  setters, whatever their arguments, return PRODIGAL_ERR_INVALID_INPUT
+     *  with the reason and change nothing, except
+     *  prodigal_set_translation_table(11), which is accepted and changes
+     *  nothing.  So it has no model to export.
+     *  prodigal_set_training_sequences() is accepted: the sequences, spacers
+     *  included, become the one sequence to search. */
     int    meta_mode;
 
-    /** Start score weight.  Affects the balance between coding potential and
-     *  start signal strength.  Default: 4.35.  Rarely needs changing.
-     *  Metagenomic mode takes only the default: each bin has its own. */
+    /** Start score weight, finite and > 0.  Affects the balance between
+     *  coding potential and start signal strength.  Default: 4.35.  Rarely
+     *  needs changing.  With meta_mode only exactly 4.35 is accepted. */
     double start_weight;
 
     /** Custom allocator for internal working buffers.  If NULL, system
      *  malloc is used.  Must return memory suitable for any alignment
-     *  (16-byte aligned recommended).  The context struct itself and all
-     *  output structs always use system malloc regardless of this setting. */
+     *  (16-byte aligned recommended).  What it serves: Memory model, at
+     *  the top of this file.  Set both alloc_fn and free_fn, or neither: free_fn without alloc_fn
+     *  is refused, and with alloc_fn but no free_fn the library frees
+     *  alloc_fn's blocks with system free(). */
     void  *(*alloc_fn)(size_t size, void *user_data);
 
     /** Custom deallocator paired with alloc_fn.  If NULL, system free is
@@ -303,18 +322,20 @@ typedef struct {
      *  and free_fn.  Typically a pool or arena handle. */
     void   *allocator_user_data;
 
-    /** Logging callback.  Receives diagnostic messages (progress, warnings).
-     *  If NULL, messages are silently discarded.  The msg string is valid
-     *  only for the duration of the callback. */
+    /** Logging callback.  Receives prodigal_train()'s progress messages,
+     *  the only ones the library logs.  If NULL, they are discarded.  The
+     *  msg string is valid only for the duration of the callback. */
     void   (*log_callback)(const char *msg, void *user_data);
 
     /** User data pointer passed to log_callback. */
     void   *log_user_data;
 
-    /** Progress callback for long-running operations (metagenomic scoring).
-     *  Called with a stage name and fraction done [0.0, 1.0].
-     *  Return 0 to continue, nonzero to cancel (prodigal_find_genes will
-     *  return PRODIGAL_ERR_CANCELLED).  If NULL, no progress reporting. */
+    /** Progress callback.  Called by prodigal_find_genes() in metagenomic
+     *  mode only, before each of the 50 bins, with stage "metagenomic
+     *  scoring" and the fraction of bins done, i/50 (0.0 to 0.98; never
+     *  1.0).  Return 0 to continue, nonzero to cancel: prodigal_find_genes()
+     *  then returns PRODIGAL_ERR_CANCELLED, with the sequence still loaded.
+     *  If NULL, no progress reporting. */
     int    (*progress_callback)(const char *stage, double frac_done,
                                 void *user_data);
 
@@ -337,7 +358,7 @@ typedef struct {
      *  (the rest are dropped), plus, after prodigal_set_training_sequences
      *  with several sequences, 12 for each spacer (one after each). */
     int32_t length;
-    double  gc_content;         /**< GC fraction [0, 1].  0.0 if no sequence loaded. */
+    double  gc_content;         /**< GC fraction [0, 1] of length (ambiguous bases and spacers count as not GC).  0.0 if no sequence loaded. */
 } prodigal_seq_info_t;
 
 /*******************************************************************************
@@ -367,8 +388,12 @@ typedef struct {
 typedef struct {
     int32_t  n_genes;           /**< Number of predicted genes */
 
-    int32_t *begin;             /**< 1-based left coordinate, length n_genes */
-    int32_t *end;               /**< 1-based right coordinate, length n_genes */
+    /** 1-based, inclusive coordinates, begin < end on both strands, the stop
+     *  codon included (unless the gene runs off the edge there); in the
+     *  sequence as encoded (characters outside 'A'..'z' dropped: see
+     *  prodigal_set_sequence()).  Length n_genes. */
+    int32_t *begin;             /**< Left coordinate */
+    int32_t *end;               /**< Right coordinate */
     int32_t *strand;            /**< +1 forward, -1 reverse, length n_genes */
 
     int32_t *partial_left;      /**< 1 if gene runs off left edge, length n_genes */
@@ -376,27 +401,30 @@ typedef struct {
     int32_t *start_type;        /**< 0=ATG, 1=GTG, 2=TTG, 3=Edge, length n_genes */
 
     double  *cscore;            /**< Coding score (6-mer log-odds), length n_genes */
-    double  *sscore;            /**< Start score (tscore+rscore+uscore), length n_genes */
+    double  *sscore;            /**< Start score as the CLI reports it; in general not tscore + rscore + uscore (adjustments: docs/internals.md, "Scoring").  Length n_genes */
     double  *rscore;            /**< RBS motif score, length n_genes */
     double  *uscore;            /**< Upstream composition score, length n_genes */
     double  *tscore;            /**< Start type score, length n_genes */
     double  *confidence;        /**< Confidence in [50, 100], length n_genes */
-    double  *gc_cont;           /**< Per-gene GC content, length n_genes */
+    double  *gc_cont;           /**< GC fraction [0, 1] of the gene as Prodigal counts it: ambiguous bases count as GC, and a reverse-strand gene's window is 2 bases off (docs/upstream-behavior.md, quirks 3 and 14).  Length n_genes */
 
     const char **rbs_motif;     /**< RBS motif, as the CLI prints it (e.g. "AGGAG", "TAA", "None"), length n_genes */
     const char **rbs_spacer;    /**< RBS spacer, as the CLI prints it (e.g. "5-10bp", "8bp", "None"), length n_genes */
 
     /** Proteins, when the config set want_proteins; otherwise NULL.
-     *  Arrow-style: gene i's protein is the protein_offsets[i+1] -
-     *  protein_offsets[i] letters at protein_data + protein_offsets[i];
-     *  there are n_genes + 1 offsets, the first 0, and protein_data has no
-     *  NUL bytes.  A protein is the CLI's -a record
-     *  without its line breaks: one letter per codon of the gene, from its
-     *  start, with X for a codon holding an ambiguous base, M for the start
-     *  codon (unless the gene runs off the edge there), * for the stop codon
-     *  (none when the gene runs off the edge at its stop end), and between
-     *  them the amino acids of the model's translation table, which are
-     *  NCBI's (docs/genetic-codes.md). */
+     *  Arrow-style (int32 offsets, as Arrow's Utf8): gene i's protein is
+     *  the protein_offsets[i+1] - protein_offsets[i] letters at
+     *  protein_data + protein_offsets[i]; there are n_genes + 1 offsets,
+     *  the first 0, and protein_data has no NUL bytes.  With n_genes == 0
+     *  both are NULL (an Arrow consumer supplies the single 0 offset).
+     *  A protein is the CLI's -a record without its line breaks: one
+     *  letter per codon of the gene, from its start, with X for a codon
+     *  holding an ambiguous base, M for the start codon (unless the gene
+     *  runs off the edge there), * for the stop codon (none when the gene
+     *  runs off the edge at its stop end), and between them the amino acids
+     *  of the table the genes were called with
+     *  (prodigal_stats_t.translation_table), as NCBI defines it
+     *  (docs/genetic-codes.md). */
     int32_t *protein_offsets;
     char    *protein_data;
 
@@ -436,8 +464,8 @@ typedef struct {
  */
 typedef struct {
     int32_t         n_genes;    /**< Number of predicted genes */
-    prodigal_gene_t *genes;     /**< Array of n_genes entries */
-    void            *_base;     /**< Single backing allocation.  Internal. */
+    prodigal_gene_t *genes;     /**< Array of n_genes entries; NULL if n_genes == 0 */
+    void            *_base;     /**< Single backing allocation (NULL if n_genes == 0).  Internal. */
 } prodigal_genes_t;
 
 /*******************************************************************************
@@ -447,15 +475,16 @@ typedef struct {
 /**
  * Computation statistics.  Pointer-free, safe to memcpy.
  * Passed by pointer to prodigal_find_genes(); may be NULL if not needed.
+ * Filled when it succeeds; not to be read after an error.
  */
 typedef struct {
     int32_t n_genes;            /**< Number of genes found */
     int32_t n_nodes;            /**< Number of start/stop nodes evaluated */
-    double  gc_content;         /**< Sequence GC content */
-    int32_t translation_table;  /**< Translation table used */
-    int32_t uses_sd;            /**< Nonzero if Shine-Dalgarno motifs used */
-    int32_t best_meta_bin;      /**< Best metagenomic bin index (-1 if not meta) */
-    char    best_meta_desc[512];/**< Description of best metagenomic bin */
+    double  gc_content;         /**< Sequence GC fraction, as prodigal_get_seq_info() */
+    int32_t translation_table;  /**< Table the genes were called with: the model's, or in metagenomic mode the bin's */
+    int32_t uses_sd;            /**< Nonzero if that model or bin uses Shine-Dalgarno motifs */
+    int32_t best_meta_bin;      /**< The bin that called the genes, 0..49 (-1 in single-genome mode) */
+    char    best_meta_desc[512];/**< Its description ("" in single-genome mode) */
 } prodigal_stats_t;
 
 /*******************************************************************************
@@ -476,7 +505,8 @@ typedef struct {
 *******************************************************************************/
 
 /** This header's ABI version.  Bumped whenever a public struct's layout, a
- *  function's signature or a public constant's value changes.
+ *  function's signature or a public constant's value changes (the version
+ *  macros aside: a release changes them).
  *  prodigal_config_init() checks it; bindings with their own mirrors (such
  *  as GPL-boundary's Rust #[repr(C)] structs) pass theirs to
  *  prodigal_config_init_v() or compare it with prodigal_abi_version(). */
@@ -527,7 +557,12 @@ PRODIGAL_API int prodigal_config_init_v(prodigal_config_t *config,
  * arrays at their floors).  The arrays grow as each sequence needs (in
  * prodigal_set_sequence, prodigal_set_training_sequences, prodigal_train
  * and prodigal_find_genes, any of which can then return
- * PRODIGAL_ERR_NOMEM) and go back to their floors afterwards.  The config
+ * PRODIGAL_ERR_NOMEM).  The nodes and genes go back to their floors when
+ * prodigal_train() or prodigal_find_genes() returns, and the sequence's
+ * bitmaps (0.625-1.25 B a base) at the next prodigal_set_sequence() or
+ * prodigal_set_training_sequences().  The masked-region list and, in
+ * metagenomic mode, the bins (about 28 MB, from the first
+ * prodigal_find_genes()) are kept until prodigal_destroy().  The config
  * is snapshotted; the caller may modify or discard it after this call.
  *
  * Returns NULL on failure: a config prodigal_config_validate() rejects, or
@@ -541,16 +576,21 @@ PRODIGAL_API prodigal_ctx_t *prodigal_create(const prodigal_config_t *config);
 
 /**
  * Check a config the way prodigal_create() does, and say what is wrong.
+ * Needs no context; thread-safe.
  *
- * Rejected: NULL, a struct_size other than this library's
- * sizeof(prodigal_config_t), an unsupported translation table
- * (docs/genetic-codes.md; with meta_mode, any but 11), a start weight
- * that is not finite and > 0, with meta_mode force_nonsd or a start
- * weight other than the default, and free_fn without alloc_fn.
+ * Checked in this order, and the first failure is reported: NULL; a
+ * struct_size other than this library's sizeof(prodigal_config_t); an
+ * unsupported trans_table (docs/genetic-codes.md), or with meta_mode any
+ * but 11; a start_weight that is not finite and > 0; with meta_mode, a
+ * nonzero force_nonsd, then a start_weight other than exactly 4.35 (the
+ * default); free_fn without alloc_fn.  alloc_fn without free_fn is
+ * accepted (see alloc_fn); the ABI version is prodigal_config_init()'s
+ * check.
  *
  * @param config   Config to check.  May be NULL (rejected).
  * @param msg      Receives the reason, or "" if the config is valid; may be
- *                 NULL.  Truncated to msg_len bytes, NUL included.
+ *                 NULL.  Truncated to msg_len bytes, NUL included; nothing
+ *                 is written when msg_len is 0.
  * @param msg_len  Size of msg in bytes; messages fit in 256.
  * @return PRODIGAL_OK or PRODIGAL_ERR_INVALID_CONFIG.
  */
@@ -573,18 +613,19 @@ PRODIGAL_API void prodigal_destroy(prodigal_ctx_t *ctx);
  *
  * Encodes the raw ASCII nucleotide string into Prodigal's internal 2-bit
  * representation, computes the reverse complement, and calculates GC content.
- * Accepts A/C/G/T/N in upper or lower case.  Characters outside 'A'..'z'
+ * A, C, G and T, in either case, are bases.  Characters outside 'A'..'z'
  * (digits, '-', '.', '*', whitespace, ...) are dropped, as the CLI drops
  * them, which shifts the coordinates of everything after them:
  * prodigal_get_seq_info() reports how many characters were kept, so a
- * caller can compare that with len.  Other characters in 'A'..'z' (IUPAC
- * codes, '[', '_', ...) are ambiguous bases, encoded as C with an
- * ambiguity flag.
+ * caller can compare that with len.  Every other character in 'A'..'z'
+ * (N, IUPAC codes, '[', '_', ...) is an ambiguous base, encoded as C with
+ * an ambiguity flag (how GC counts it: prodigal_seq_info_t.gc_content,
+ * prodigal_genes_soa_t.gc_cont; training counts it as GC).
  *
  * At most 31,989,999 characters may be kept (MAX_SEQ - MAX_LINE - 1), the
  * CLI's limit; a longer sequence is an error (PRODIGAL_ERR_INVALID_INPUT).
- * PRODIGAL_ERR_NOMEM: no memory for the sequence (0.625 B a base, growing
- * by doubling) or, with mask_regions, its masked regions.  On an error no
+ * PRODIGAL_ERR_NOMEM: no memory for the sequence or, with mask_regions,
+ * its masked regions.  On an error no
  * sequence is loaded.
  *
  * Resets internal state from any previous sequence.  The context can be
@@ -593,8 +634,11 @@ PRODIGAL_API void prodigal_destroy(prodigal_ctx_t *ctx);
  * @param ctx     Context.
  * @param seq     Raw nucleotide string (not null-terminated required; len used).
  * @param len     Number of characters in seq.  Must be > 0.
- * @param header  Sequence name/header.  May be NULL.
- * @return PRODIGAL_OK or error code.
+ * @param header  Sequence name/header.  May be NULL.  Nothing the library
+ *                returns uses it.
+ * @return PRODIGAL_OK; PRODIGAL_ERR_INVALID_INPUT for a NULL ctx or seq,
+ *         len <= 0, no character in 'A'..'z', or more than 31,989,999 kept;
+ *         PRODIGAL_ERR_NOMEM.
  */
 PRODIGAL_API int prodigal_set_sequence(prodigal_ctx_t *ctx,
                                        const char *seq, int32_t len,
@@ -608,15 +652,19 @@ PRODIGAL_API int prodigal_set_sequence(prodigal_ctx_t *ctx,
  * After this call, use prodigal_train() to build the model.  Characters are
  * kept or dropped as in prodigal_set_sequence(), and the same limit applies
  * to the whole, spacers included: a longer input is an error, where the
- * CLI warns and trains on the start of it.  PRODIGAL_ERR_NOMEM as in
- * prodigal_set_sequence().
+ * CLI warns and trains on the start of it.  With more than one sequence,
+ * a 12-base spacer follows each, and a NULL entry, or one of length <= 0,
+ * adds only its spacer (so spacers alone are accepted).  On an error no
+ * sequence is loaded.
  *
  * @param ctx      Context.
  * @param seqs     Array of n_seqs raw nucleotide strings.
- * @param headers  Array of n_seqs header strings (may be NULL).
+ * @param headers  Array of n_seqs header strings (may be NULL).  Only
+ *                 headers[0] is kept, as prodigal_set_sequence()'s header.
  * @param lens     Array of n_seqs sequence lengths.
  * @param n_seqs   Number of sequences.  Must be > 0.
- * @return PRODIGAL_OK or error code.
+ * @return As prodigal_set_sequence(), and PRODIGAL_ERR_INVALID_INPUT for a
+ *         NULL seqs or lens, or n_seqs <= 0.
  */
 PRODIGAL_API int prodigal_set_training_sequences(prodigal_ctx_t *ctx,
                                                   const char **seqs,
@@ -631,7 +679,8 @@ PRODIGAL_API int prodigal_set_training_sequences(prodigal_ctx_t *ctx,
  *
  * @param ctx   Context.
  * @param info  Output struct to populate.
- * @return PRODIGAL_OK or error code.
+ * @return PRODIGAL_OK, or PRODIGAL_ERR_INVALID_INPUT for a NULL argument
+ *         (no message: the context is const).
  */
 PRODIGAL_API int prodigal_get_seq_info(const prodigal_ctx_t *ctx,
                                        prodigal_seq_info_t *info);
@@ -639,8 +688,10 @@ PRODIGAL_API int prodigal_get_seq_info(const prodigal_ctx_t *ctx,
 /**
  * Train a gene-finding model from the loaded training sequences.
  *
- * Requires prior call to prodigal_set_training_sequences() with >= 20000 bp
- * of concatenated sequence.  Runs the full Prodigal training pipeline:
+ * Trains on the loaded sequence: normally every contig, loaded with
+ * prodigal_set_training_sequences(); one loaded with
+ * prodigal_set_sequence() works too.  It needs at least 20,000 bases
+ * (characters kept, spacers included).  Runs the full Prodigal training pipeline:
  * node creation, GC bias analysis, initial dynamic programming, dicodon
  * statistics, RBS scoring, and start codon weight training.
  *
@@ -660,10 +711,10 @@ PRODIGAL_API int prodigal_get_seq_info(const prodigal_ctx_t *ctx,
  * for each contig.  Alternatively, export the model with
  * prodigal_export_training() for later reuse.
  *
- * Refused in a metagenomic context, whose bins are its models.
- *
  * @param ctx  Context with training sequences loaded.
- * @return PRODIGAL_OK, PRODIGAL_ERR_SEQ_TOO_SHORT, or other error code.
+ * @return PRODIGAL_OK; PRODIGAL_ERR_INVALID_INPUT for a NULL ctx, a
+ *         metagenomic context or no sequence loaded;
+ *         PRODIGAL_ERR_SEQ_TOO_SHORT under 20,000 bases; PRODIGAL_ERR_NOMEM.
  */
 PRODIGAL_API int prodigal_train(prodigal_ctx_t *ctx);
 
@@ -678,7 +729,7 @@ PRODIGAL_API int prodigal_train(prodigal_ctx_t *ctx);
  * machine or to 32-bit x86 Linux, which aligns doubles to 4 bytes.  It
  * need not be aligned.
  * Rejected, leaving the context unchanged: any model in a metagenomic
- * context, whose bins are its models; a wrong size, an unsupported
+ * context (prodigal_config_t.meta_mode); a wrong size, an unsupported
  * translation table (docs/genetic-codes.md), a GC outside [0, 1], a start
  * weight that is not finite and > 0, and an SD flag other than 0 or 1.
  * Other values are not checked: they can be NaN
@@ -699,12 +750,13 @@ PRODIGAL_API int prodigal_load_training(prodigal_ctx_t *ctx,
  * The blob is binary-compatible with Prodigal's -t training file format.
  *
  * @param ctx       Context with a model, from prodigal_train() or
- *                  prodigal_load_training().
+ *                  prodigal_load_training() (a metagenomic context never
+ *                  has one).
  * @param data_out  Receives pointer to malloc'd blob.
  * @param len_out   Receives size of blob in bytes.
- * @return PRODIGAL_OK, PRODIGAL_ERR_NOMEM, or PRODIGAL_ERR_INVALID_INPUT
- *         when an argument is NULL or the context has no model (no
- *         message: the context is const).
+ * @return PRODIGAL_OK, or, with no message (the context is const),
+ *         PRODIGAL_ERR_NOMEM, or PRODIGAL_ERR_INVALID_INPUT when an
+ *         argument is NULL or the context has no model.
  */
 PRODIGAL_API int prodigal_export_training(const prodigal_ctx_t *ctx,
                                           void **data_out, size_t *len_out);
@@ -712,7 +764,8 @@ PRODIGAL_API int prodigal_export_training(const prodigal_ctx_t *ctx,
 /**
  * Read a model's settings from a blob without loading it.
  *
- * Accepts exactly the blobs prodigal_load_training() accepts (the blob of
+ * Accepts exactly the blobs prodigal_load_training() accepts in a
+ * single-genome context (the blob of
  * prodigal_export_training() or a CLI -t file; it need not be aligned) and
  * gives the same reasons for the others, so it also checks a model file
  * before any context exists.
@@ -723,8 +776,8 @@ PRODIGAL_API int prodigal_export_training(const prodigal_ctx_t *ctx,
  * @param msg      Receives the reason, or "" if the blob is accepted; may be
  *                 NULL.  Truncated to msg_len bytes, NUL included.
  * @param msg_len  Size of msg in bytes; messages fit in 256.
- * @return PRODIGAL_OK, or PRODIGAL_ERR_INVALID_INPUT for a NULL argument or
- *         a blob prodigal_load_training() rejects.
+ * @return PRODIGAL_OK, or PRODIGAL_ERR_INVALID_INPUT for a NULL data or
+ *         info, or a blob prodigal_load_training() rejects.
  */
 PRODIGAL_API int prodigal_training_info(const void *data, size_t len,
                                         prodigal_training_info_t *info,
@@ -735,8 +788,9 @@ PRODIGAL_API int prodigal_training_info(const void *data, size_t len,
  *  the current model directly.  Useful for experimentation or for tweaking
  *  a loaded model.  The translation table and start weight also apply to
  *  later training; prodigal_train() replaces the GC and SD usage, so set
- *  those after training or loading.  A metagenomic context, whose bins are
- *  its models, refuses them all, but for translation table 11.
+ *  those after training or loading.  A metagenomic context refuses them
+ *  all, except prodigal_set_translation_table(11) (see
+ *  prodigal_config_t.meta_mode).
  */
 /**@{*/
 
@@ -752,21 +806,26 @@ PRODIGAL_API int prodigal_set_translation_table(prodigal_ctx_t *ctx, int table);
 /**
  * Set the start score weight.
  * @param weight  Must be finite and > 0.  Default: 4.35.
- * @return PRODIGAL_OK or PRODIGAL_ERR_INVALID_INPUT.
+ * @return PRODIGAL_OK, or PRODIGAL_ERR_INVALID_INPUT (NULL ctx, a weight
+ *         that is not finite and > 0, or a metagenomic context).
  */
 PRODIGAL_API int prodigal_set_start_weight(prodigal_ctx_t *ctx, double weight);
 
 /**
  * Set the GC content in the training model.
  * @param gc  Must be in [0.0, 1.0].
- * @return PRODIGAL_OK or PRODIGAL_ERR_INVALID_INPUT.
+ * @return PRODIGAL_OK, or PRODIGAL_ERR_INVALID_INPUT (NULL ctx, gc outside
+ *         [0, 1] or NaN, or a metagenomic context).
  */
 PRODIGAL_API int prodigal_set_gc(prodigal_ctx_t *ctx, double gc);
 
 /**
  * Set whether the model uses Shine-Dalgarno motifs.
+ * Zero on a model trained with SD motifs scores upstream motifs with
+ * weights its training never set (zero).
  * @param uses_sd  Nonzero: use SD.  Zero: use upstream motif scan.
- * @return PRODIGAL_OK or PRODIGAL_ERR_INVALID_INPUT.
+ * @return PRODIGAL_OK, or PRODIGAL_ERR_INVALID_INPUT (NULL ctx, or a
+ *         metagenomic context).
  */
 PRODIGAL_API int prodigal_set_uses_sd(prodigal_ctx_t *ctx, int uses_sd);
 /**@}*/
@@ -775,19 +834,24 @@ PRODIGAL_API int prodigal_set_uses_sd(prodigal_ctx_t *ctx, int uses_sd);
  * Find genes in the currently loaded sequence (SOA output).
  *
  * In single-genome mode, requires prior training (prodigal_train() or
- * prodigal_load_training()).  In metagenomic mode, training is built-in
- * and lazily initialized on first call (~27 MB for 50 models).
+ * prodigal_load_training()).  In metagenomic mode the first call allocates
+ * the 50 built-in models (see prodigal_create()).
  *
  * On success, *genes_out is set to a newly allocated SOA struct.  The caller
  * must free it with prodigal_genes_free().  If stats_out is non-NULL, it is
  * populated with computation statistics.
  *
- * On error, *genes_out is set to NULL.
+ * On error, *genes_out is set to NULL (when genes_out isn't NULL), and the
+ * sequence and model stay loaded, so the call can be repeated.
  *
  * @param ctx        Context with a sequence loaded.
  * @param genes_out  Receives pointer to SOA output (caller frees).
  * @param stats_out  Receives computation stats, or NULL to skip.
- * @return PRODIGAL_OK or error code.
+ * @return PRODIGAL_OK; PRODIGAL_ERR_INVALID_INPUT for a NULL ctx or
+ *         genes_out, no model in single-genome mode, or no sequence loaded;
+ *         PRODIGAL_ERR_NOMEM; PRODIGAL_ERR_CANCELLED (metagenomic mode,
+ *         progress_callback); PRODIGAL_ERR_INTERNAL (not expected: protein
+ *         letters past 32-bit offsets).
  */
 PRODIGAL_API int prodigal_find_genes(prodigal_ctx_t *ctx,
                                      prodigal_genes_soa_t **genes_out,
@@ -802,7 +866,7 @@ PRODIGAL_API int prodigal_find_genes(prodigal_ctx_t *ctx,
  * @param ctx        Context with a sequence loaded.
  * @param genes_out  Receives pointer to AOS output (caller frees).
  * @param stats_out  Receives computation stats, or NULL to skip.
- * @return PRODIGAL_OK or error code.
+ * @return As prodigal_find_genes(), and PRODIGAL_ERR_NOMEM for the copy.
  */
 PRODIGAL_API int prodigal_find_genes_aos(prodigal_ctx_t *ctx,
                                          prodigal_genes_t **genes_out,
@@ -810,14 +874,14 @@ PRODIGAL_API int prodigal_find_genes_aos(prodigal_ctx_t *ctx,
 
 /**
  * Free a SOA gene output struct.
- * Safe to call with NULL (no-op).  Always uses system free().
+ * Safe to call with NULL (no-op).  Never uses the custom allocator.
  * @param genes  SOA struct to free, or NULL.
  */
 PRODIGAL_API void prodigal_genes_free(prodigal_genes_soa_t *genes);
 
 /**
  * Free an AOS gene output struct.
- * Safe to call with NULL (no-op).  Always uses system free().
+ * Safe to call with NULL (no-op).  Never uses the custom allocator.
  * @param genes  AOS struct to free, or NULL.
  */
 PRODIGAL_API void prodigal_genes_aos_free(prodigal_genes_t *genes);
@@ -835,8 +899,12 @@ PRODIGAL_API const char *prodigal_strerror(int error_code);
 /**
  * Get a detailed error message from the last failed operation.
  *
- * Returns a pointer to an internal buffer in the context.  Valid until the
- * next API call on the same context, or until prodigal_destroy().
+ * Returns a pointer to an internal buffer in the context, which the next
+ * failing call on it overwrites; valid until prodigal_destroy().  Read it
+ * right after a call returns an error: a successful call does not clear
+ * it (prodigal_set_sequence() and prodigal_set_training_sequences() do),
+ * and the errors of prodigal_get_seq_info() and prodigal_export_training(),
+ * whose context is const, set none, leaving an older message.
  * Returns "" on a fresh context with no errors.
  * Returns "NULL context" if ctx is NULL.
  *
@@ -869,7 +937,7 @@ PRODIGAL_API const prodigal_abi_field_t *prodigal_abi_layout(size_t *n);
  * Get the library version string at runtime.
  *
  * Useful for FFI consumers that cannot use compile-time macros.
- * Returns a pointer to a string literal (e.g., "2.6.3").
+ * Returns a pointer to a string literal (e.g., "2.6.5").
  *
  * @return Static version string.
  */

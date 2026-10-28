@@ -142,7 +142,8 @@ make distclean          # removes objects, binaries and libs
     `prodigal_genes_soa_t`, `prodigal_stats_t`, …) must be mirrored in
     GPL-boundary's `#[repr(C)]` bindings in the same rollout.
   - Such a change, a changed function signature or a changed public
-    constant bumps `PRODIGAL_ABI_VERSION` (`prodigal.h`); then pin the new
+    constant (the version macros aside) bumps `PRODIGAL_ABI_VERSION`
+    (`prodigal.h`); then pin the new
     names hash in `test_abi_layout` (its failure prints it). A new field
     goes in its struct's list in `prodigal_api.c` (`CONFIG_FIELDS` and the
     like), in order: the build fails when a list misses a field, and

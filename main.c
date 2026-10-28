@@ -28,7 +28,7 @@
 
 
 #define VERSION PRODIGAL_VERSION_STRING
-#define DATE "April, 2026"
+#define DATE "October, 2026"
 
 #define MIN_SINGLE_GENOME 20000
 #define IDEAL_SINGLE_GENOME 100000

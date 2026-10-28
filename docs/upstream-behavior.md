@@ -18,6 +18,8 @@ c1e2d36 (2023-01-27)                     ← fork base = correctness oracle
   │   b0b2d78 / d48c935 / 0a9a9ef  GitHub Actions CI (Linux/macOS/Windows/WASM)
   │   8558797  PRODIGAL_NO_MAIN guards on library stderr writes
   │   4da852a / fe531b8 / dd88690  version → 2.6.4
+  │   eea8c83 …                    2.6.5: one pipeline for the CLI and the library,
+  │                                fixes, genetic codes, proteins, less memory (CHANGES)
 ```
 
 Upstream has not released anything since `v2.6.3`, and its version string
@@ -78,9 +80,11 @@ oracle. Change one only by explicit decision: record it here and in
    non-N closes the run.
 6. **`calc_most_gc_frame` leaves the last `slen % 3` positions at `-1`.**
    This slightly biases `record_gc_bias` during training.
-7. **Confidence is clamped to `[50, 99.99]`.** Scores with
-   `score/st_wt ≥ 41` report 99.99; values just under that can print as
-   `100.00` at 2 decimals.
+7. **Confidence tops out at 100.0, not 99.99.** `calculate_confidence`
+   clamps it to at least 50 and returns 99.99 for `score/st_wt ≥ 41`, but
+   just under that, from about 37.4, `exp(x) + 1` rounds to `exp(x)` (from
+   about 36.7 on some inputs), so it is exactly 100.0; it prints as
+   `100.00` at 2 decimals from about 9.9.
 8. **Circular genomes are not handled.** Genes cannot span the origin.
 9. **Meta mode ignores `-g`, `-n` and the start weight.** Each of the 50
    bins brings its own translation table (11 or 4), SD usage and start

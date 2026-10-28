@@ -18,6 +18,13 @@ prodigal -h
 
   The reasons for each table, the start codons Prodigal never uses, and how this is tested against NCBI's own file are in [docs/genetic-codes.md](docs/genetic-codes.md).
 
+### New in 2.6.5 (October 2026)
+  * Genetic codes checked against NCBI's: the tables Prodigal gets wrong are rejected (above), and tables 26 and 32 are added.
+  * The library finds the same genes, with the same scores, as the CLI in both modes, writes the same training file as `-t`, and can return proteins.
+  * Fixed a crash on low-complexity input and one in metagenomic mode; contigs are no longer cut at 30,000 genes or 5,000 masked regions.
+  * Less memory, and 14-38% less time than 2.6.4, with the same output.
+  * The full list is in [CHANGES](CHANGES).
+
 ### New in 2.6.4 (April 2026)
   * Reentrant API created
 

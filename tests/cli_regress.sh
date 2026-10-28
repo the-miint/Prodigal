@@ -138,6 +138,22 @@ else
   echo "FAIL closed stdin (exit $rc)"; sed 's/^/     /' "$O/stderr"; fail=1
 fi
 
+# The release's version and date: VERSION ("v2.6.5: October 2026") names
+# PRODIGAL_VERSION_STRING, and -v prints both (the CLI has no version of
+# its own; main.c's DATE is the other copy of the date).
+if grep -qx "v$FORK_VERSION: .*" VERSION; then
+  echo "OK   VERSION names $FORK_VERSION"
+else
+  echo "FAIL VERSION: want \"v$FORK_VERSION: <date>\", got \"$(head -1 VERSION)\""; fail=1
+fi
+date=$(sed -n '1s/^v[^:]*: \(.*\) \([0-9]*\)$/\1, \2/p' VERSION)
+run -v >/dev/null
+if grep -qx "Prodigal V$FORK_VERSION: $date" "$O/stderr"; then
+  echo "OK   -v prints $FORK_VERSION: $date"
+else
+  echo "FAIL -v: want \"Prodigal V$FORK_VERSION: $date\""; sed 's/^/     /' "$O/stderr"; fail=1
+fi
+
 # Translation tables Prodigal does not use as NCBI defines them are
 # rejected (docs/genetic-codes.md), with the reason; upstream used 1, 2, 3,
 # 6, 10, 12, 14, 16, 22, 23 and 24.
