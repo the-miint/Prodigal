@@ -149,9 +149,10 @@ make distclean          # removes objects, binaries and libs
     like), in order: the build fails when a list misses a field, and
     `test_abi_layout` when the order is wrong or a struct typedef is
     missing.
-  - GPL-boundary only size-checks the config struct today (its layout check
-    against `prodigal_abi_layout()` is planned), so field order still needs
-    a manual review there.
+  - GPL-boundary checks its mirrors field by field against
+    `prodigal_abi_layout()` (`test_abi_layout_matches_c`): offsets and
+    sizes, so a reordered or missing field fails there, but a wrong type of
+    the same size doesn't; review the types against the header.
 - **Adding a `.c` file** means updating, together:
   - `CORE_SOURCES` in the `Makefile`;
   - the `CORE=` lists in `ci.yml` (WASM job);

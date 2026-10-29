@@ -354,6 +354,9 @@ and a flag matrix. Still different:
   messages; `%.lib.o` / `%.pic.o` define `PRODIGAL_NO_MAIN` for
   `libprodigal.a` and `libprodigal.so`. Only the CLI links zlib.
 - **GPL-boundary** compiles the seven library sources itself
-  (`build_prodigal()`), with `-DPRODIGAL_NO_MAIN -O3 -fvisibility=hidden`,
-  into a static archive linked into a Rust binary alongside FastTree,
-  SortMeRNA, Bowtie2 and RocksDB.
+  (`build_prodigal()`), with `-DPRODIGAL_NO_MAIN -O3 -fvisibility=hidden
+  -ffp-contract=off`, into a static archive linked into a Rust binary
+  alongside FastTree, SortMeRNA, Bowtie2 and RocksDB. Keep its flags the
+  Makefile's: `-ffp-contract=off` keeps ARM64 output equal to x86-64's,
+  and `-funroll-loops`, which it once added, made metagenomic mode 47%
+  slower (E. coli 12.4 s → 18.1 s, the same output).
