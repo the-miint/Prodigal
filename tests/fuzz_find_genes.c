@@ -64,6 +64,8 @@ static void check_genes(prodigal_ctx_t *c, const prodigal_genes_soa_t *g,
     prodigal_get_seq_info(c, &info);
     CHECK(g->n_genes >= 0 && st->n_genes == g->n_genes);
     CHECK(memchr(st->best_meta_desc, '\0', sizeof(st->best_meta_desc)) != NULL);
+    CHECK(st->gc_content == info.gc_content);
+    CHECK(0.0 <= st->model_gc_content && st->model_gc_content <= 1.0);
     for (i = 0; i < g->n_genes; i++) {
         CHECK(1 <= g->begin[i] && g->begin[i] <= g->end[i] &&
               g->end[i] <= info.length);

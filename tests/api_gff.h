@@ -4,7 +4,7 @@
     inline, so each uses what it needs.
 
     Per contig, a model line, then one line per gene:
-      #  seqnum  seqlen=N  model=DESC  transl_table=T  uses_sd=U
+      #  seqnum  seqlen=N  model=DESC  gc_cont=G  transl_table=T  uses_sd=U
       seqid  CDS  begin  end  score  strand  0  ID=..;partial=..;...;tscore=..;
     The gene line is the CLI's GFF CDS line without column 2 (the version);
     the model line holds the fields of its "# Sequence Data" / "# Model Data"
@@ -51,12 +51,15 @@ static inline void api_seqid(char *out, size_t n, const char *hdr, int seqnum) {
 }
 
 /* The model line. model ("-" in single mode) ends at a NUL or a double
-   quote, so the CLI side can pass the rest of its line. */
+   quote, so the CLI side can pass the rest of its line; gc_cont is the
+   model's GC in percent, printed as the CLI prints it. */
 static inline void api_model_line(char *out, size_t n, int seqnum, int seqlen,
-                                  const char *model, int table, int uses_sd) {
-    api_fits(snprintf(out, n, "#\t%d\tseqlen=%d\tmodel=%.*s\ttransl_table=%d\tuses_sd=%d",
-                      seqnum, seqlen, (int)strcspn(model, "\""), model, table,
-                      uses_sd), n);
+                                  const char *model, double gc_cont, int table,
+                                  int uses_sd) {
+    api_fits(snprintf(out, n, "#\t%d\tseqlen=%d\tmodel=%.*s\tgc_cont=%.2f"
+                      "\ttransl_table=%d\tuses_sd=%d",
+                      seqnum, seqlen, (int)strcspn(model, "\""), model, gc_cont,
+                      table, uses_sd), n);
 }
 
 /* Gene i of g. seqid is api_seqid's, seqnum the 1-based record index. */
@@ -169,11 +172,12 @@ static inline int api_gff_from_cli(char *line, int blank_score, api_cli_state_t 
     if (strncmp(line, "# Model Data: ", 14) == 0) {
         const char *rt = api_cli_field(line, "run_type=");
         const char *m = api_cli_field(line, "model=\"");
+        const char *gc = api_cli_field(line, ";gc_cont=");
         const char *tt = api_cli_field(line, "transl_table=");
         const char *sd = api_cli_field(line, "uses_sd=");
         if (rt == NULL || strncmp(rt, "Metagenomic", 11) != 0 || m == NULL) m = "-";
-        api_model_line(out, n, st->seqnum, st->seqlen, m, tt ? atoi(tt) : -1,
-                       sd ? atoi(sd) : -1);
+        api_model_line(out, n, st->seqnum, st->seqlen, m, gc ? atof(gc) : -1,
+                       tt ? atoi(tt) : -1, sd ? atoi(sd) : -1);
         return API_CLI_MODEL;
     }
     if (line[0] == '#') return -1;
@@ -215,7 +219,7 @@ static inline int api_emit_found(prodigal_ctx_t *ctx, const fasta_t *fa, int32_t
     if (rc != PRODIGAL_OK) return rc;
     prodigal_get_seq_info(ctx, &info);
     api_model_line(line, sizeof(line), k + 1, info.length,
-                   meta ? stats.best_meta_desc : "-",
+                   meta ? stats.best_meta_desc : "-", stats.model_gc_content * 100.0,
                    stats.translation_table, stats.uses_sd);
     emit(line, arg);
     api_seqid(seqid, sizeof(seqid), fa->headers[k], k + 1);

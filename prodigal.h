@@ -481,6 +481,7 @@ typedef struct {
     int32_t n_genes;            /**< Number of genes found */
     int32_t n_nodes;            /**< Number of start/stop nodes evaluated */
     double  gc_content;         /**< Sequence GC fraction, as prodigal_get_seq_info() */
+    double  model_gc_content;   /**< GC fraction of the model that called the genes: the bin's in metagenomic mode, else the trained or loaded model's, unless prodigal_set_gc changed it (the CLI's Model Data gc_cont is 100 times it) */
     int32_t translation_table;  /**< Table the genes were called with: the model's, or in metagenomic mode the bin's */
     int32_t uses_sd;            /**< Nonzero if that model or bin uses Shine-Dalgarno motifs */
     int32_t best_meta_bin;      /**< The bin that called the genes, 0..49 (-1 in single-genome mode) */
@@ -510,7 +511,7 @@ typedef struct {
  *  prodigal_config_init() checks it; bindings with their own mirrors (such
  *  as GPL-boundary's Rust #[repr(C)] structs) pass theirs to
  *  prodigal_config_init_v() or compare it with prodigal_abi_version(). */
-#define PRODIGAL_ABI_VERSION 1
+#define PRODIGAL_ABI_VERSION 2
 
 /** One row of prodigal_abi_layout(): a public struct, or one of its fields.
  *  This struct is in the table too, but a binding must mirror it to read

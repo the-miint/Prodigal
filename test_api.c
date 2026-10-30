@@ -187,8 +187,8 @@ static int header_structs(char names[][64], int max) {
 /* The ABI version and the FNV-1a hash of the table's names ("type;" and
    "type.field;" per row) in that version. A change to the table's structs
    or fields without a new version fails test_abi_layout. */
-#define ABI_PINNED_VERSION 1
-#define ABI_PINNED_HASH 0x8a6eb5fcu
+#define ABI_PINNED_VERSION 2
+#define ABI_PINNED_HASH 0xe626f1eau
 
 /* prodigal_abi_layout lists the public structs of prodigal.h in order, each
    with its fields in order, none overlapping the one before; its names are
@@ -779,6 +779,8 @@ static void test_find_genes_with_training(void) {
     if (tdata == NULL) return;
     fasta_t fa;
     if (!load_anthus(&fa)) { free(tdata); return; }
+    prodigal_training_info_t model;
+    ASSERT_EQ_INT(prodigal_training_info(tdata, tlen, &model, NULL, 0), PRODIGAL_OK);
     prodigal_ctx_t *ctx = make_model_ctx(tdata, tlen);
     free(tdata);
     ASSERT_TRUE(ctx != NULL);
@@ -791,6 +793,7 @@ static void test_find_genes_with_training(void) {
     rc = prodigal_find_genes(ctx, &genes, &stats);
     ASSERT_EQ_INT(rc, PRODIGAL_OK);
     ASSERT_TRUE(genes != NULL);
+    ASSERT_TRUE(stats.model_gc_content == model.gc_content);
 
     /* Validate SOA structure */
     if (genes->n_genes > 0) {
@@ -814,6 +817,13 @@ static void test_find_genes_with_training(void) {
 
     ASSERT_TRUE(stats.n_genes == genes->n_genes);
     ASSERT_TRUE(stats.n_nodes > 0);
+
+    /* The model's GC as prodigal_set_gc changed it */
+    prodigal_genes_free(genes);
+    genes = NULL;
+    ASSERT_EQ_INT(prodigal_set_gc(ctx, 0.6), PRODIGAL_OK);
+    ASSERT_EQ_INT(prodigal_find_genes(ctx, &genes, &stats), PRODIGAL_OK);
+    ASSERT_TRUE(stats.model_gc_content == 0.6);
 
     prodigal_genes_free(genes);
     fasta_free(&fa);
@@ -918,6 +928,8 @@ static void test_meta_no_path_bin(void) {
     ASSERT_EQ_INT(stats.best_meta_bin, 1);
     ASSERT_EQ_INT(stats.translation_table, 4);
     ASSERT_EQ_INT(stats.uses_sd, 0);
+    /* Bin 1's model GC (initialize_metagenome_1) */
+    ASSERT_TRUE(stats.model_gc_content == 0.400);
     prodigal_genes_free(genes);
     prodigal_destroy(ctx);
     TEST_PASS();

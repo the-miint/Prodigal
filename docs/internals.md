@@ -305,8 +305,7 @@ and a flag matrix. Still different:
 - **Missing from the API:**
   - gene nucleotide sequences (`-d`);
   - the all-starts table (`-s`);
-  - the gene ID (`<seqnum>_<n>`) and the total `score`;
-  - per-contig model data (GFF `# Model Data`) beyond `prodigal_stats_t`.
+  - the gene ID (`<seqnum>_<n>`) and the total `score`.
 - **Input limits.** Both accept at most `MAX_BASES` bases kept, that is
   `MAX_SEQ - MAX_LINE - 1` (the CLI stops at `len + MAX_LINE >= MAX_SEQ`).
   The CLI rejects a longer contig, as the library does, but trains on the

@@ -993,6 +993,7 @@ static void fill_stats(const prodigal_ctx_t *ctx, int ng, int nn, int bin,
     stats->n_genes = ng;
     stats->n_nodes = nn;
     stats->gc_content = ctx->gc;
+    stats->model_gc_content = tinf->gc;
     stats->translation_table = tinf->trans_table;
     stats->uses_sd = tinf->uses_sd;
     stats->best_meta_bin = bin;
@@ -1157,7 +1158,7 @@ int prodigal_abi_version(void) { return PRODIGAL_ABI_VERSION; }
     F(T, gc_cont) F(T, rbs_motif) F(T, rbs_spacer) F(T, protein)
 #define GENES_FIELDS(F, A, T) F(T, n_genes) F(T, genes) F(T, _base)
 #define STATS_FIELDS(F, A, T) F(T, n_genes) F(T, n_nodes) F(T, gc_content) \
-    F(T, translation_table) F(T, uses_sd) F(T, best_meta_bin) \
+    F(T, model_gc_content) F(T, translation_table) F(T, uses_sd) F(T, best_meta_bin) \
     A(T, best_meta_desc)
 #define TRAINING_INFO_FIELDS(F, A, T) F(T, translation_table) \
     F(T, uses_sd) F(T, gc_content) F(T, start_weight)

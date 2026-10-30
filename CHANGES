@@ -61,7 +61,7 @@ above; also a GC outside [0, 1], a start weight that is not finite and
 final -G or -d without its parameter is an error; upstream read
 past the end of the arguments, and a final -G crashed. -h lists the
 supported translation tables.
-* Library: ABI checks. PRODIGAL_ABI_VERSION / prodigal_abi_version() (1)
+* Library: ABI checks. PRODIGAL_ABI_VERSION / prodigal_abi_version() (2)
 is bumped on any change to a public struct, a function signature or a
 public constant. prodigal_config_init is now a macro over the new
 prodigal_config_init_v(config, abi_version, struct_size), which refuses a
@@ -89,6 +89,13 @@ config's struct_size except where pointers are 4 bytes and doubles 8-byte
 aligned (wasm32, 32-bit ARM, Win32): there the new field fills padding and
 the size doesn't change; prodigal_config_init (above) now catches it
 everywhere.
+* Library: prodigal_stats_t gains model_gc_content, the GC of the model
+that called the genes: the bin's in metagenomic mode, else the trained or
+loaded model's, unless prodigal_set_gc changed it. The CLI prints 100
+times it as the Model Data gc_cont; the bin descriptions' GC differs from
+it in bins 17, 38, 47 and 49, so it can't be read from best_meta_desc.
+PRODIGAL_ABI_VERSION 2 (the first commit tagged v2.6.5 has 1); consumers
+must be rebuilt.
 * Library: new prodigal_config_validate says why a config is rejected.
 * Library: prodigal_create also rejects a start weight that is not finite
 and > 0, and a free_fn without an alloc_fn.
